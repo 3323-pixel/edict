@@ -60,7 +60,11 @@ def get_known_models():
             timeout=20,
             check=True,
         )
-        payload = json.loads(result.stdout)
+        stdout = result.stdout.strip()
+        json_start = stdout.find('{')
+        if json_start >= 0:
+            stdout = stdout[json_start:]
+        payload = json.loads(stdout)
         models = payload.get('models', []) if isinstance(payload, dict) else []
         known = []
         seen = set()
