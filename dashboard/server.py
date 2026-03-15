@@ -936,46 +936,34 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
 
 def handle_review_action(task_id, action, comment=''):
     """门下省御批：准奏/封驳。"""
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
+    task = _edict_get_task(task_id)
+    if not task:
+        tasks = load_tasks()
+        task = next((t for t in tasks if t.get('id') == task_id), None)
     if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
     if task.get('state') not in ('Review', 'Menxia'):
         return {'ok': False, 'error': f'任务 {task_id} 当前状态为 {task.get("state")}，无法御批'}
 
-    _ensure_scheduler(task)
-    _scheduler_snapshot(task, f'review-before-{action}')
-
     if action == 'approve':
-        if task['state'] == 'Menxia':
-            task['state'] = 'Assigned'
-            task['now'] = '门下省准奏，移交尚书省派发'
+        if task.get('state') == 'Menxia':
+            new_state = 'Assigned'
             remark = f'✅ 准奏：{comment or "门下省审议通过"}'
-            to_dept = '尚书省'
-        else:  # Review
-            task['state'] = 'Done'
-            task['now'] = '御批通过，任务完成'
+            from_dept, to_dept = '门下省', '尚书省'
+        else:
+            new_state = 'Done'
             remark = f'✅ 御批准奏：{comment or "审查通过"}'
-            to_dept = '皇上'
+            from_dept, to_dept = '皇上', '皇上'
     elif action == 'reject':
-        round_num = (task.get('review_round') or 0) + 1
-        task['review_round'] = round_num
-        task['state'] = 'Zhongshu'
-        task['now'] = f'封驳退回中书省修订（第{round_num}轮）'
+        new_state = 'Zhongshu'
         remark = f'🚫 封驳：{comment or "需要修改"}'
-        to_dept = '中书省'
+        from_dept, to_dept = '门下省', '中书省'
     else:
         return {'ok': False, 'error': f'未知操作: {action}'}
 
-    task.setdefault('flow_log', []).append({
-        'at': now_iso(),
-        'from': '门下省' if task.get('state') != 'Done' else '皇上',
-        'to': to_dept,
-        'remark': remark
-    })
-    _scheduler_mark_progress(task, f'审议动作 {action} -> {task.get("state")}')
-    task['updatedAt'] = now_iso()
-    save_tasks(tasks)
+    _edict_transition(task_id, new_state, 'system', remark)
+    _edict_add_flow(task_id, from_dept, to_dept, remark)
+    task['state'] = new_state
 
     # 🚀 审批后自动派发对应 Agent
     new_state = task['state']
@@ -1282,14 +1270,24 @@ def _scheduler_mark_progress(task, note=''):
 
 
 def _update_task_scheduler(task_id, updater):
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
+    task = _edict_get_task(task_id)
+    if not task:
+        tasks = load_tasks()
+        task = next((t for t in tasks if t.get('id') == task_id), None)
     if not task:
         return False
-    sched = _ensure_scheduler(task)
+    sched = task.get('_scheduler') or task.get('scheduler') or {}
+    _ensure_scheduler(task)
+    sched = task.get('_scheduler', sched)
     updater(task, sched)
-    task['updatedAt'] = now_iso()
-    save_tasks(tasks)
+    _edict_update_scheduler(task_id, sched)
+    # JSON fallback
+    tasks = load_tasks()
+    jtask = next((t for t in tasks if t.get('id') == task_id), None)
+    if jtask:
+        jtask['_scheduler'] = sched
+        jtask['updatedAt'] = now_iso()
+        save_tasks(tasks)
     return True
 
 
@@ -1320,36 +1318,39 @@ def get_scheduler_state(task_id):
 
 
 def handle_scheduler_retry(task_id, reason=''):
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
+    task = _edict_get_task(task_id)
+    if not task:
+        tasks = load_tasks()
+        task = next((t for t in tasks if t.get('id') == task_id), None)
     if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
     state = task.get('state', '')
     if state in _TERMINAL_STATES or state == 'Blocked':
         return {'ok': False, 'error': f'任务 {task_id} 当前状态 {state} 不支持重试'}
 
-    sched = _ensure_scheduler(task)
+    sched = task.get('_scheduler') or task.get('scheduler') or {}
     sched['retryCount'] = int(sched.get('retryCount') or 0) + 1
     sched['lastRetryAt'] = now_iso()
     sched['lastDispatchTrigger'] = 'taizi-retry'
-    _scheduler_add_flow(task, f'触发重试第{sched["retryCount"]}次：{reason or "超时未推进"}')
-    task['updatedAt'] = now_iso()
-    save_tasks(tasks)
+    _edict_add_flow(task_id, '太子调度', task.get('org', ''), f'触发重试第{sched["retryCount"]}次：{reason or "超时未推进"}')
+    _edict_update_scheduler(task_id, sched)
 
     dispatch_for_state(task_id, task, state, trigger='taizi-retry')
     return {'ok': True, 'message': f'{task_id} 已触发重试派发', 'retryCount': sched['retryCount']}
 
 
 def handle_scheduler_escalate(task_id, reason=''):
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
+    task = _edict_get_task(task_id)
+    if not task:
+        tasks = load_tasks()
+        task = next((t for t in tasks if t.get('id') == task_id), None)
     if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
     state = task.get('state', '')
     if state in _TERMINAL_STATES:
         return {'ok': False, 'error': f'任务 {task_id} 已结束，无需升级'}
 
-    sched = _ensure_scheduler(task)
+    sched = task.get('_scheduler') or task.get('scheduler') or {}
     current_level = int(sched.get('escalationLevel') or 0)
     next_level = min(current_level + 1, 2)
     target = 'menxia' if next_level == 1 else 'shangshu'
@@ -1357,9 +1358,8 @@ def handle_scheduler_escalate(task_id, reason=''):
 
     sched['escalationLevel'] = next_level
     sched['lastEscalatedAt'] = now_iso()
-    _scheduler_add_flow(task, f'升级到{target_label}协调：{reason or "任务停滞"}', to=target_label)
-    task['updatedAt'] = now_iso()
-    save_tasks(tasks)
+    _edict_add_flow(task_id, '太子调度', target_label, f'升级到{target_label}协调：{reason or "任务停滞"}')
+    _edict_update_scheduler(task_id, sched)
 
     msg = (
         f'🧭 太子调度升级通知\n'
@@ -1375,27 +1375,26 @@ def handle_scheduler_escalate(task_id, reason=''):
 
 
 def handle_scheduler_rollback(task_id, reason=''):
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
+    task = _edict_get_task(task_id)
+    if not task:
+        tasks = load_tasks()
+        task = next((t for t in tasks if t.get('id') == task_id), None)
     if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-    sched = _ensure_scheduler(task)
+    sched = task.get('_scheduler') or task.get('scheduler') or {}
     snapshot = sched.get('snapshot') or {}
     snap_state = snapshot.get('state')
     if not snap_state:
         return {'ok': False, 'error': f'任务 {task_id} 无可用回滚快照'}
 
     old_state = task.get('state', '')
-    task['state'] = snap_state
-    task['org'] = snapshot.get('org', task.get('org', ''))
-    task['now'] = f'↩️ 太子调度自动回滚：{reason or "恢复到上个稳定节点"}'
-    task['block'] = '无'
+    _edict_transition(task_id, snap_state, 'scheduler', f'回滚：{old_state} → {snap_state}')
     sched['retryCount'] = 0
     sched['escalationLevel'] = 0
     sched['stallSince'] = None
     sched['lastProgressAt'] = now_iso()
-    _scheduler_add_flow(task, f'执行回滚：{old_state} → {snap_state}，原因：{reason or "停滞恢复"}')
-    task['updatedAt'] = now_iso()
+    _edict_update_scheduler(task_id, sched)
+    _edict_add_flow(task_id, '太子调度', snapshot.get('org', ''), f'执行回滚：{old_state} → {snap_state}，原因：{reason or "停滞恢复"}')
     save_tasks(tasks)
 
     if snap_state not in _TERMINAL_STATES:
