@@ -141,6 +141,35 @@ def _sync_edict_states_to_json():
                 sched['escalationLevel'] = 0
             task['_scheduler'] = sched
             changed = True
+
+    # 第三轮：EDICT 有但 JSON 没有的任务（飞书创建的旨意），补写到 JSON
+    json_ids = {t.get('id') for t in tasks if t.get('id')}
+    for tid, edict_task in edict_index.items():
+        if tid in json_ids or not tid.startswith('JJC-'):
+            continue
+        state = edict_task.get('state', '')
+        if state in ('Done', 'Cancelled'):
+            continue
+        new_task = {
+            'id': tid,
+            'title': edict_task.get('title', ''),
+            'official': edict_task.get('official', ''),
+            'org': edict_task.get('org', ''),
+            'state': state,
+            'now': edict_task.get('now', ''),
+            'eta': edict_task.get('eta', '-'),
+            'block': edict_task.get('block', '无'),
+            'output': edict_task.get('output', ''),
+            'priority': edict_task.get('priority', 'normal'),
+            'flow_log': edict_task.get('flow_log', []),
+            'progress_log': edict_task.get('progress_log', []),
+            'todos': edict_task.get('todos', []),
+            'updatedAt': edict_task.get('updatedAt', now_iso()),
+        }
+        tasks.insert(0, new_task)
+        log.info(f'[EDICT→JSON] 补录任务 {tid}: {new_task["title"][:30]}')
+        changed = True
+
     if changed:
         save_tasks(tasks)
     return changed
