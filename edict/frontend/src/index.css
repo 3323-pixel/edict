@@ -264,8 +264,8 @@ body {
 .la-section { margin-bottom: 18px; }
 .la-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .la-title { font-size: 11px; font-weight: 700; color: var(--acc); letter-spacing: .06em; }
-.la-log { max-height: 320px; overflow-y: auto; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
-.la-entry { display: flex; gap: 8px; align-items: flex-start; padding: 5px 8px; border-radius: 6px; line-height: 1.5; word-break: break-all; }
+.la-log { max-height: 600px; overflow-y: auto; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.la-entry { display: flex; gap: 8px; align-items: flex-start; padding: 5px 8px; border-radius: 6px; line-height: 1.5; word-break: break-all; white-space: pre-wrap; }
 .la-entry:hover { background: rgba(106,158,255,.04); }
 .la-empty { text-align: center; color: var(--muted); padding: 20px; font-size: 12px; }
 
