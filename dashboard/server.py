@@ -203,11 +203,17 @@ def _sync_edict_states_to_json():
     return changed
 
 def _output_meta(path):
-    p = pathlib.Path(path)
-    if not p.exists():
-        return {"exists": False, "lastModified": None}
-    ts = datetime.datetime.fromtimestamp(p.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
-    return {"exists": True, "lastModified": ts}
+    if not path or len(path) > 500 or '\n' in path:
+        # output contains content (not a path) or is empty
+        return {"exists": bool(path), "lastModified": None, "isContent": bool(path)}
+    try:
+        p = pathlib.Path(path)
+        if not p.exists():
+            return {"exists": False, "lastModified": None}
+        ts = datetime.datetime.fromtimestamp(p.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+        return {"exists": True, "lastModified": ts}
+    except (OSError, ValueError):
+        return {"exists": bool(path), "lastModified": None, "isContent": True}
 
 def _build_live_status_payload(tasks=None):
     """生成当前 live-status 响应，避免依赖异步刷新的旧缓存文件。"""
@@ -384,19 +390,13 @@ def save_tasks(tasks):
 
 def handle_task_action(task_id, action, reason):
     """Stop/cancel/resume a task from the dashboard."""
-    # 从 EDICT 获取任务
     task = _edict_get_task(task_id)
-    if not task:
-        # 回退到 JSON
-        tasks = load_tasks()
-        task = next((t for t in tasks if t.get('id') == task_id), None)
     if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
 
     old_state = task.get('state', '')
     remark = f'{"⏸️ 叫停" if action == "stop" else "🚫 取消" if action == "cancel" else "▶️ 恢复"}：{reason}'
 
-    # EDICT 状态变更
     if action == 'stop':
         _edict_transition(task_id, 'Blocked', 'system', reason or '皇上叫停')
     elif action == 'cancel':
@@ -405,10 +405,8 @@ def handle_task_action(task_id, action, reason):
         prev_state = task.get('_prev_state') or (task.get('_scheduler', {}).get('snapshot', {}).get('state')) or 'Doing'
         _edict_transition(task_id, prev_state, 'system', '皇上恢复执行')
 
-    # EDICT 流转记录
     _edict_add_flow(task_id, '皇上', task.get('org', ''), remark)
 
-    # EDICT scheduler 更新
     sched = task.get('_scheduler') or task.get('scheduler') or {}
     if action in ('stop', 'cancel'):
         sched['snapshot'] = {'state': old_state, 'at': now_iso()}
@@ -416,25 +414,6 @@ def handle_task_action(task_id, action, reason):
         sched['lastProgressAt'] = now_iso()
         sched['stallSince'] = None
     _edict_update_scheduler(task_id, sched)
-
-    # 同步到 JSON（过渡期）
-    tasks = load_tasks()
-    jtask = next((t for t in tasks if t.get('id') == task_id), None)
-    if jtask:
-        if action == 'stop':
-            jtask['state'] = 'Blocked'
-            jtask['block'] = reason or '皇上叫停'
-        elif action == 'cancel':
-            jtask['state'] = 'Cancelled'
-            jtask['block'] = reason or '皇上取消'
-        elif action == 'resume':
-            jtask['state'] = jtask.get('_prev_state', 'Doing')
-            jtask['block'] = '无'
-        if action in ('stop', 'cancel'):
-            jtask['_prev_state'] = old_state
-        jtask['updatedAt'] = now_iso()
-        jtask.setdefault('flow_log', []).append({'at': now_iso(), 'from': '皇上', 'to': jtask.get('org', ''), 'remark': remark})
-        save_tasks(tasks)
 
     if action == 'resume':
         new_state = task.get('_prev_state') or (task.get('_scheduler', {}).get('snapshot', {}).get('state')) or 'Doing'
@@ -447,7 +426,6 @@ def handle_task_action(task_id, action, reason):
 def handle_archive_task(task_id, archived, archive_all_done=False):
     """Archive or unarchive a task, or batch-archive all Done/Cancelled tasks."""
     if archive_all_done:
-        # 批量归档：从 EDICT 获取所有任务，逐个归档
         edict_resp = _edict_request('GET', '/api/tasks/live-status')
         edict_index = _index_edict_tasks(edict_resp) if edict_resp else {}
         count = 0
@@ -455,43 +433,16 @@ def handle_archive_task(task_id, archived, archive_all_done=False):
             if t.get('state') in ('Done', 'Cancelled') and not t.get('archived'):
                 if _edict_archive(tid, True):
                     count += 1
-        # 同步到 JSON
-        tasks = load_tasks()
-        for t in tasks:
-            if t.get('state') in ('Done', 'Cancelled') and not t.get('archived'):
-                t['archived'] = True
-                t['archivedAt'] = now_iso()
-        save_tasks(tasks)
         return {'ok': True, 'message': f'{count} 道旨意已归档', 'count': count}
 
-    # 单任务归档：EDICT 优先
-    result = _edict_archive(task_id, archived)
-    # 同步到 JSON
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if task:
-        task['archived'] = archived
-        if archived:
-            task['archivedAt'] = now_iso()
-        else:
-            task.pop('archivedAt', None)
-        task['updatedAt'] = now_iso()
-        save_tasks(tasks)
+    _edict_archive(task_id, archived)
     label = '已归档' if archived else '已取消归档'
     return {'ok': True, 'message': f'{task_id} {label}'}
 
 
 def update_task_todos(task_id, todos):
     """Update the todos list for a task."""
-    # EDICT 优先
     _edict_request('PUT', f'/api/tasks/by-legacy/{task_id}/todos', {'todos': todos})
-    # 同步到 JSON
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
-    if task:
-        task['todos'] = todos
-        task['updatedAt'] = now_iso()
-        save_tasks(tasks)
     return {'ok': True, 'message': f'{task_id} todos 已更新'}
 
 
@@ -859,17 +810,14 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
         return {'ok': False, 'error': f'标题过短（{len(title)}<{_MIN_TITLE_LEN}字），不像是旨意'}
     if title.lower() in _JUNK_TITLES:
         return {'ok': False, 'error': f'「{title}」不是有效旨意，请输入具体工作指令'}
-    # 生成 task id: JJC-YYYYMMDD-NNN（从 EDICT + JSON 两边取最大序号）
+    # 生成 task id: JJC-YYYYMMDD-NNN（从 EDICT 取最大序号）
     today = datetime.datetime.now().strftime('%Y%m%d')
     prefix = f'JJC-{today}-'
-    tasks = load_tasks()
-    today_ids = [t['id'] for t in tasks if t.get('id', '').startswith(prefix)]
-    # 也从 EDICT 拉
+    today_ids = []
     edict_resp = _edict_request('GET', '/api/tasks/live-status')
     if edict_resp:
         edict_idx = _index_edict_tasks(edict_resp)
-        today_ids += [tid for tid in edict_idx if tid.startswith(prefix)]
-    today_ids = list(set(today_ids))
+        today_ids = [tid for tid in edict_idx if tid.startswith(prefix)]
     seq = 1
     if today_ids:
         nums = [int(tid.split('-')[-1]) for tid in today_ids if tid.split('-')[-1].isdigit()]
@@ -903,15 +851,9 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
     if target_dept:
         new_task['targetDept'] = target_dept
 
-    _ensure_scheduler(new_task)
-    _scheduler_snapshot(new_task, 'create-task-initial')
-    _scheduler_mark_progress(new_task, '任务创建')
-
-    tasks.insert(0, new_task)
-    save_tasks(tasks)
     log.info(f'创建任务: {task_id} | {title[:40]}')
 
-    # 同步到 EDICT Backend（失败时标记，不阻塞派发）
+    # EDICT 创建（主路径）
     edict_result = _edict_request('POST', '/api/tasks/legacy', {
         'legacy_id': task_id,
         'title': title,
@@ -921,17 +863,11 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
         'remark': f'下旨：{title}',
     })
     if edict_result is None:
-        new_task['_edict_synced'] = False
-        log.warning(f'[EDICT] 任务 {task_id} 创建同步失败，已标记 _edict_synced=false')
-        # 重新保存带标记的任务
-        save_tasks(tasks)
+        return {'ok': False, 'error': f'任务创建失败：EDICT 后端不可用'}
 
     dispatch_for_state(task_id, new_task, 'Taizi', trigger='imperial-edict')
 
-    msg = f'旨意 {task_id} 已下达，正在派发给太子'
-    if edict_result is None:
-        msg += '（⚠️ EDICT同步失败，任务仅存在于本地看板）'
-    return {'ok': True, 'taskId': task_id, 'message': msg}
+    return {'ok': True, 'taskId': task_id, 'message': f'旨意 {task_id} 已下达，正在派发给太子'}
 
 
 def handle_review_action(task_id, action, comment=''):
@@ -1272,32 +1208,17 @@ def _scheduler_mark_progress(task, note=''):
 def _update_task_scheduler(task_id, updater):
     task = _edict_get_task(task_id)
     if not task:
-        tasks = load_tasks()
-        task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
         return False
     sched = task.get('_scheduler') or task.get('scheduler') or {}
     _ensure_scheduler(task)
     sched = task.get('_scheduler', sched)
     updater(task, sched)
     _edict_update_scheduler(task_id, sched)
-    # JSON fallback
-    tasks = load_tasks()
-    jtask = next((t for t in tasks if t.get('id') == task_id), None)
-    if jtask:
-        jtask['_scheduler'] = sched
-        jtask['updatedAt'] = now_iso()
-        save_tasks(tasks)
     return True
 
 
 def get_scheduler_state(task_id):
-    # 优先从 EDICT 读取
     task = _edict_get_task(task_id)
-    if not task:
-        # 回退到 JSON
-        tasks = load_tasks()
-        task = next((t for t in tasks if t.get('id') == task_id), None)
     if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
     sched = task.get('_scheduler') or task.get('scheduler') or {}
@@ -1320,9 +1241,6 @@ def get_scheduler_state(task_id):
 def handle_scheduler_retry(task_id, reason=''):
     task = _edict_get_task(task_id)
     if not task:
-        tasks = load_tasks()
-        task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
     state = task.get('state', '')
     if state in _TERMINAL_STATES or state == 'Blocked':
@@ -1341,9 +1259,6 @@ def handle_scheduler_retry(task_id, reason=''):
 
 def handle_scheduler_escalate(task_id, reason=''):
     task = _edict_get_task(task_id)
-    if not task:
-        tasks = load_tasks()
-        task = next((t for t in tasks if t.get('id') == task_id), None)
     if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
     state = task.get('state', '')
@@ -1377,9 +1292,6 @@ def handle_scheduler_escalate(task_id, reason=''):
 def handle_scheduler_rollback(task_id, reason=''):
     task = _edict_get_task(task_id)
     if not task:
-        tasks = load_tasks()
-        task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
     sched = task.get('_scheduler') or task.get('scheduler') or {}
     snapshot = sched.get('snapshot') or {}
@@ -1395,7 +1307,6 @@ def handle_scheduler_rollback(task_id, reason=''):
     sched['lastProgressAt'] = now_iso()
     _edict_update_scheduler(task_id, sched)
     _edict_add_flow(task_id, '太子调度', snapshot.get('org', ''), f'执行回滚：{old_state} → {snap_state}，原因：{reason or "停滞恢复"}')
-    save_tasks(tasks)
 
     if snap_state not in _TERMINAL_STATES:
         dispatch_for_state(task_id, task, snap_state, trigger='taizi-rollback')
@@ -1410,8 +1321,7 @@ def handle_scheduler_scan(threshold_sec=180):
     if edict_tasks is not None:
         tasks = edict_tasks
     else:
-        _sync_edict_states_to_json()
-        tasks = load_tasks()
+        tasks = []
     now_dt = datetime.datetime.now(datetime.timezone.utc)
     pending_retries = []
     pending_escalates = []
@@ -1492,8 +1402,6 @@ def handle_scheduler_scan(threshold_sec=180):
                 sched = task.get('_scheduler') or task.get('scheduler')
                 if sched:
                     _edict_update_scheduler(tid, sched)
-        # 同步到 JSON（过渡期）
-        save_tasks(tasks)
 
     for task_id, state in pending_retries:
         retry_task = next((t for t in tasks if t.get('id') == task_id), None)
@@ -1979,9 +1887,8 @@ def _get_task_output(task_id):
     # 优先从 EDICT 获取
     task = _edict_get_task(task_id)
     if not task:
-        tasks = load_tasks()
-        task = next((t for t in tasks if t.get('id') == task_id), None)
-    output_path = (task.get('output') or '').strip() if task else ''
+        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    output_path = (task.get('output') or '').strip()
 
     # 1. 尝试读文件
     if output_path and output_path != '-':
@@ -2058,12 +1965,7 @@ def get_task_activity(task_id):
     - activity 条目中 progress/todos 保留 state/org 快照
     - activity 中 todos 条目含 diff 字段
     """
-    # 优先从 EDICT 获取任务
     task = _edict_get_task(task_id)
-    if not task:
-        # 回退到 JSON
-        tasks = load_tasks()
-        task = next((t for t in tasks if t.get('id') == task_id), None)
     if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
 
@@ -2449,29 +2351,18 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
 
 def handle_advance_state(task_id, comment=''):
     """手动推进任务到下一阶段（解卡用），推进后自动派发对应 Agent。"""
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
+    task = _edict_get_task(task_id)
     if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
     cur = task.get('state', '')
     if cur not in _STATE_FLOW:
         return {'ok': False, 'error': f'任务 {task_id} 状态为 {cur}，无法推进'}
-    _ensure_scheduler(task)
-    _scheduler_snapshot(task, f'advance-before-{cur}')
     next_state, from_dept, to_dept, default_remark = _STATE_FLOW[cur]
     remark = comment or default_remark
 
+    _edict_transition(task_id, next_state, 'system', f'手动推进：{remark}')
+    _edict_add_flow(task_id, from_dept, to_dept, f'⬇️ 手动推进：{remark}')
     task['state'] = next_state
-    task['now'] = f'⬇️ 手动推进：{remark}'
-    task.setdefault('flow_log', []).append({
-        'at': now_iso(),
-        'from': from_dept,
-        'to': to_dept,
-        'remark': f'⬇️ 手动推进：{remark}'
-    })
-    _scheduler_mark_progress(task, f'手动推进 {cur} -> {next_state}')
-    task['updatedAt'] = now_iso()
-    save_tasks(tasks)
 
     # 🚀 推进后自动派发对应 Agent（Done 状态无需派发）
     if next_state != 'Done':

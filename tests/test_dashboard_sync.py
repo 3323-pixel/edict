@@ -177,36 +177,28 @@ def test_state_change_resets_retry_count(tmp_path):
 
 # ── 中危: EDICT write failure handling ──
 
-def test_create_task_marks_edict_synced_false_on_failure(tmp_path):
-    """When EDICT POST fails, task should be marked _edict_synced=false."""
+def test_create_task_fails_when_edict_unavailable(tmp_path):
+    """When EDICT POST fails, create should return error (EDICT is primary)."""
     srv = _setup_server(tmp_path, [])
 
     with patch.object(srv, '_edict_request', return_value=None), \
          patch.object(srv, 'dispatch_for_state'):
-        result = srv.handle_create_task('测试EDICT写入失败的任务标记')
+        result = srv.handle_create_task('测试EDICT写入失败返回错误')
 
-    assert result['ok'] is True
-    assert '⚠️' in result['message']
-
-    tasks = json.loads((tmp_path / 'data' / 'tasks_source.json').read_text())
-    task = next(t for t in tasks if t['title'] == '测试EDICT写入失败的任务标记')
-    assert task['_edict_synced'] is False
+    assert result['ok'] is False
+    assert 'EDICT' in result.get('error', '')
 
 
-def test_create_task_no_flag_on_success(tmp_path):
-    """When EDICT POST succeeds, no _edict_synced flag."""
+def test_create_task_succeeds_with_edict(tmp_path):
+    """When EDICT POST succeeds, task is created."""
     srv = _setup_server(tmp_path, [])
 
     with patch.object(srv, '_edict_request', return_value={'id': 'JJC-TEST'}), \
          patch.object(srv, 'dispatch_for_state'):
-        result = srv.handle_create_task('测试EDICT写入成功无标记')
+        result = srv.handle_create_task('测试EDICT写入成功创建任务')
 
     assert result['ok'] is True
-    assert '⚠️' not in result['message']
-
-    tasks = json.loads((tmp_path / 'data' / 'tasks_source.json').read_text())
-    task = next(t for t in tasks if t['title'] == '测试EDICT写入成功无标记')
-    assert '_edict_synced' not in task
+    assert result.get('taskId', '').startswith('JJC-')
 
 
 # ── #1: compensation sync idempotent ──

@@ -116,7 +116,9 @@ def test_dirty_title_cleaned():
         "中书令",
         "下旨（自动预建）：全面审查/Users/bingsen/clawd/项目",
     )
-    payload = FakeClient.calls[0][1]
+    create_call = next((c for c in FakeClient.calls if c[0] == "create_task"), None)
+    assert create_call is not None, "create_task not called"
+    payload = create_call[1]
     assert "/Users" not in payload["title"]
     assert "Conversation" not in payload["title"]
     assert "自动预建" not in payload["remark"]
@@ -129,14 +131,17 @@ def test_pure_path_rejected():
 
 def test_normal_title():
     cmd_create("JJC-TEST-E2E-03", "调研工业数据分析大模型应用方案", "Zhongshu", "中书省", "中书令", "太子整理旨意")
-    payload = FakeClient.calls[0][1]
-    assert payload["title"] == "调研工业数据分析大模型应用方案"
+    create_call = next((c for c in FakeClient.calls if c[0] == "create_task"), None)
+    assert create_call is not None
+    assert create_call[1]["title"] == "调研工业数据分析大模型应用方案"
 
 
 def test_flow_remark_cleaned():
     cmd_flow("JJC-TEST-E2E-04", "太子", "中书省", "旨意传达：审查/Users/bingsen/clawd/xxx项目 Conversation blah")
-    assert [name for name, _ in FakeClient.calls] == ["transition", "add_flow"]
-    payload = FakeClient.calls[1][1]
+    call_names = [name for name, _ in FakeClient.calls]
+    assert "add_flow" in call_names
+    flow_call = next(c for c in FakeClient.calls if c[0] == "add_flow")
+    payload = flow_call[1]
     assert payload["from_dept"] == "太子"
     assert "/Users" not in payload["remark"]
     assert "Conversation" not in payload["remark"]
@@ -149,8 +154,9 @@ def test_short_title_rejected():
 
 def test_prefix_stripped():
     cmd_create("JJC-TEST-E2E-06", "传旨：帮我写技术博客文章关于智能体架构", "Zhongshu", "中书省", "中书令")
-    payload = FakeClient.calls[0][1]
-    assert not payload["title"].startswith("传旨")
+    create_call = next((c for c in FakeClient.calls if c[0] == "create_task"), None)
+    assert create_call is not None
+    assert not create_call[1]["title"].startswith("传旨")
 
 
 def test_forward_calls_transition_and_flow():

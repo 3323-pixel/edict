@@ -99,14 +99,14 @@ def check_services():
         pytest.skip("Dashboard server not running on localhost:7891")
 
 
-# ── Test 1: Dashboard 下旨 → dual write ──
+# ── Test 1: Dashboard 下旨 → EDICT DB ──
 
-class TestDashboardCreateDualWrite:
-    """Dashboard create-task should write to both JSON and EDICT DB."""
+class TestDashboardCreate:
+    """Dashboard create-task should write to EDICT DB."""
 
-    def test_create_writes_to_both(self):
+    def test_create_writes_to_edict(self):
         result = _dashboard_post("/api/create-task", {
-            "title": "集成测试验证Dashboard双写EDICT和JSON",
+            "title": "集成测试验证Dashboard创建任务到EDICT",
             "org": "中书省",
             "priority": "normal",
         })
@@ -114,15 +114,14 @@ class TestDashboardCreateDualWrite:
         task_id = result["taskId"]
 
         try:
-            # Verify JSON (via live-status)
-            json_task = _json_task(task_id)
-            assert json_task is not None, f"{task_id} not in dashboard live-status"
-            assert json_task["state"] == "Taizi"
-
             # Verify EDICT DB
             edict_task = _edict_task(task_id)
             assert edict_task is not None, f"{task_id} not in EDICT DB"
             assert edict_task["state"] == "Taizi"
+
+            # Verify live-status shows it
+            json_task = _json_task(task_id)
+            assert json_task is not None, f"{task_id} not in dashboard live-status"
         finally:
             _cleanup_task(task_id)
 
@@ -130,9 +129,9 @@ class TestDashboardCreateDualWrite:
 # ── Test 2: Agent updates EDICT → dashboard syncs ──
 
 class TestAgentProgressSync:
-    """Agent writes to EDICT, dashboard should pick up changes via sync."""
+    """Agent writes to EDICT, dashboard live-status reflects changes."""
 
-    def test_state_change_syncs_to_json(self):
+    def test_state_change_visible_in_dashboard(self):
         # Create via dashboard
         result = _dashboard_post("/api/create-task", {
             "title": "集成测试：状态同步验证",
