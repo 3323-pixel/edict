@@ -67,22 +67,16 @@ def _sync_edict_states_to_json():
     if not tasks:
         return False
 
-    edict_payload = _edict_request('GET', '/api/tasks/live-status')
-    edict_index = _index_edict_tasks(edict_payload)
-    if not edict_index:
-        return False
-
     changed = False
+
+    # 第一轮：补偿重试 _edict_synced=false 的任务（不依赖 live-status）
     for task in tasks:
         tid = task.get('id', '')
         if not tid or task.get('state') in ('Done', 'Cancelled'):
             continue
-
-        # 补偿重试：之前 EDICT 写入失败的任务（幂等：先查后建）
         if task.get('_edict_synced') is False:
             existing = _edict_request('GET', f'/api/tasks/by-legacy/{tid}')
             if existing and existing.get('id'):
-                # 任务实际已存在于 EDICT，直接清除标记
                 task.pop('_edict_synced', None)
                 log.info(f'[EDICT] 补偿检查：{tid} 已存在于 EDICT，清除 _edict_synced')
                 changed = True
@@ -99,6 +93,15 @@ def _sync_edict_states_to_json():
                     task.pop('_edict_synced', None)
                     log.info(f'[EDICT] 补偿创建成功: {tid}')
                     changed = True
+
+    # 第二轮：从 EDICT 同步状态（依赖 live-status）
+    edict_payload = _edict_request('GET', '/api/tasks/live-status')
+    edict_index = _index_edict_tasks(edict_payload)
+
+    for task in tasks:
+        tid = task.get('id', '')
+        if not tid or task.get('state') in ('Done', 'Cancelled'):
+            continue
 
         edict_task = edict_index.get(tid)
         if not edict_task or not edict_task.get('state'):
