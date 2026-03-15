@@ -1977,8 +1977,11 @@ def _compute_todos_diff(prev_todos, curr_todos):
 
 def _get_task_output(task_id):
     """读取任务产出内容：优先文件 → EDICT DB → JSON now 字段。"""
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
+    # 优先从 EDICT 获取
+    task = _edict_get_task(task_id)
+    if not task:
+        tasks = load_tasks()
+        task = next((t for t in tasks if t.get('id') == task_id), None)
     output_path = (task.get('output') or '').strip() if task else ''
 
     # 1. 尝试读文件
@@ -2056,8 +2059,12 @@ def get_task_activity(task_id):
     - activity 条目中 progress/todos 保留 state/org 快照
     - activity 中 todos 条目含 diff 字段
     """
-    tasks = load_tasks()
-    task = next((t for t in tasks if t.get('id') == task_id), None)
+    # 优先从 EDICT 获取任务
+    task = _edict_get_task(task_id)
+    if not task:
+        # 回退到 JSON
+        tasks = load_tasks()
+        task = next((t for t in tasks if t.get('id') == task_id), None)
     if not task:
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
 
