@@ -138,6 +138,13 @@ async def live_status(svc: TaskService = Depends(get_task_service)):
     return await svc.get_live_status()
 
 
+@router.get("/active")
+async def active_tasks(svc: TaskService = Depends(get_task_service)):
+    """列出所有活跃任务（非终态、非归档）。"""
+    tasks = await svc.list_active_tasks()
+    return {"tasks": [t.to_dict() for t in tasks]}
+
+
 @router.get("/stats")
 async def task_stats(svc: TaskService = Depends(get_task_service)):
     """任务统计。"""

@@ -215,6 +215,15 @@ class TaskService:
             "last_updated": datetime.now(timezone.utc).isoformat(),
         }
 
+    async def list_active_tasks(self) -> list[Task]:
+        """列出所有活跃任务（非终态、非归档）。"""
+        stmt = select(Task).where(
+            Task.archived == False,
+            Task.state.not_in([TaskState.Done, TaskState.Cancelled]),
+        ).order_by(Task.updated_at.desc())
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
     async def count_tasks(self, state: TaskState | None = None) -> int:
         stmt = select(func.count(Task.id))
         if state is not None:

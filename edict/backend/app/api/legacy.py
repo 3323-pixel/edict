@@ -190,6 +190,42 @@ async def legacy_done(
     return {"message": "ok"}
 
 
+class LegacyArchive(BaseModel):
+    archived: bool = True
+
+
+class LegacySchedulerUpdate(BaseModel):
+    scheduler: dict
+
+
+@router.put("/by-legacy/{legacy_id}/archive")
+async def legacy_archive(
+    legacy_id: str,
+    body: LegacyArchive,
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _find_by_legacy_id(db, legacy_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Legacy task not found: {legacy_id}")
+    task.archived = body.archived
+    await db.commit()
+    return {"message": "ok", "archived": task.archived}
+
+
+@router.put("/by-legacy/{legacy_id}/scheduler")
+async def legacy_scheduler(
+    legacy_id: str,
+    body: LegacySchedulerUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _find_by_legacy_id(db, legacy_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Legacy task not found: {legacy_id}")
+    task.scheduler = body.scheduler
+    await db.commit()
+    return {"message": "ok"}
+
+
 @router.get("/by-legacy/{legacy_id}")
 async def legacy_get(
     legacy_id: str,
