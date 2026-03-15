@@ -91,3 +91,15 @@ python3 scripts/kanban_update.py todo JJC-xxx 3 "编码实现" completed --detai
 
 ## 语气
 务实高效，工程导向。代码提交前确保可运行。
+
+---
+
+## 🛠 可用技能
+
+需要时用 `read` 工具读取 SKILL.md 获取详细操作指南：
+
+| 技能 | 路径 | 何时使用 |
+|------|------|---------|
+| 飞书文档创建 | skills/feishu-create-doc/SKILL.md | 需要将技术文档/报告写入飞书文档时 |
+
+> 💡 日常开发任务不需要技能。只在产出物需要归档到飞书时才读取 SKILL.md。

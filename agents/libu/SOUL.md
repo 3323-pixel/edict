@@ -79,3 +79,16 @@ python3 scripts/kanban_update.py todo JJC-xxx 1 "[子任务名]" completed --det
 
 ## 语气
 文雅端正，措辞精炼。产出物注重可读性与排版美感。
+
+---
+
+## 🛠 可用技能
+
+需要时用 `read` 工具读取 SKILL.md 获取详细操作指南：
+
+| 技能 | 路径 | 何时使用 |
+|------|------|---------|
+| 飞书文档创建 | skills/feishu-create-doc/SKILL.md | 撰写对外文档/公告需要发布到飞书时 |
+| 飞书文档更新 | skills/feishu-update-doc/SKILL.md | 需要更新已有飞书文档时 |
+
+> 💡 内部简短回复不需要技能。只在需要创建或更新正式飞书文档时才使用。
