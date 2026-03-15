@@ -1922,8 +1922,15 @@ def _get_task_output(task_id):
         # 检查 EDICT 的 output 字段是否有文件路径
         edict_output = (edict_task.get('output') or '').strip()
         if edict_output and edict_output != '-':
+            fname = pathlib.Path(edict_output).name
+            edict_search = [
+                pathlib.Path(edict_output),
+                BASE.parent / 'outputs' / fname,
+            ]
             for ws in (OCLAW_HOME).glob('workspace-*'):
-                fp = ws / pathlib.Path(edict_output).name
+                edict_search.append(ws / fname)
+                edict_search.append(ws / 'outputs' / fname)
+            for fp in edict_search:
                 if fp.is_file():
                     try:
                         content = fp.read_text(encoding='utf-8', errors='replace')
