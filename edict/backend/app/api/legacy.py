@@ -21,17 +21,25 @@ router = APIRouter()
 
 async def _find_by_legacy_id(db: AsyncSession, legacy_id: str) -> Task | None:
     """通过旧版 ID 查找任务（在 tags 或 meta.legacy_id 中搜索）。"""
-    # 方式1: tags 包含 legacy_id
-    stmt = select(Task).where(Task.tags.contains([legacy_id]))
-    result = await db.execute(stmt)
-    task = result.scalars().first()
+    task = await db.get(Task, legacy_id)
     if task:
         return task
 
-    # 方式2: meta->legacy_id
-    stmt2 = select(Task).where(Task.meta["legacy_id"].astext == legacy_id)
-    result2 = await db.execute(stmt2)
-    return result2.scalars().first()
+    if hasattr(Task, "tags"):
+        stmt = select(Task).where(Task.tags.contains([legacy_id]))
+        result = await db.execute(stmt)
+        task = result.scalars().first()
+        if task:
+            return task
+
+    if hasattr(Task, "meta"):
+        stmt = select(Task).where(Task.meta["legacy_id"].astext == legacy_id)
+        result = await db.execute(stmt)
+        task = result.scalars().first()
+        if task:
+            return task
+
+    return None
 
 
 class LegacyTransition(BaseModel):
@@ -43,10 +51,31 @@ class LegacyTransition(BaseModel):
 class LegacyProgress(BaseModel):
     agent: str
     content: str
+    todos: list[dict] | None = None
+    tokens: int = 0
+    cost: float = 0.0
+    elapsed: int = 0
 
 
 class LegacyTodoUpdate(BaseModel):
     todos: list[dict]
+
+
+class LegacyFlow(BaseModel):
+    from_dept: str
+    to_dept: str
+    remark: str = ""
+
+
+class LegacyBlock(BaseModel):
+    reason: str
+    agent: str = "system"
+
+
+class LegacyDone(BaseModel):
+    output: str = ""
+    summary: str = ""
+    agent: str = "system"
 
 
 @router.post("/by-legacy/{legacy_id}/transition")
@@ -67,8 +96,8 @@ async def legacy_transition(
         raise HTTPException(status_code=400, detail=f"Invalid state: {body.new_state}")
 
     try:
-        t = await svc.transition_state(task.task_id, new_state, body.agent, body.reason)
-        return {"task_id": str(t.task_id), "state": t.state.value}
+        t = await svc.transition_state_legacy(task.id, new_state, body.agent, body.reason)
+        return {"task_id": t.id, "state": t.state.value}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -85,7 +114,15 @@ async def legacy_progress(
 
     bus = await get_event_bus()
     svc = TaskService(db, bus)
-    await svc.add_progress(task.task_id, body.agent, body.content)
+    await svc.add_progress_legacy(
+        legacy_id,
+        body.agent,
+        body.content,
+        todos=body.todos,
+        tokens=body.tokens,
+        cost=body.cost,
+        elapsed=body.elapsed,
+    )
     return {"message": "ok"}
 
 
@@ -101,7 +138,55 @@ async def legacy_todos(
 
     bus = await get_event_bus()
     svc = TaskService(db, bus)
-    await svc.update_todos(task.task_id, body.todos)
+    await svc.update_todos_legacy(task.id, body.todos)
+    return {"message": "ok"}
+
+
+@router.post("/by-legacy/{legacy_id}/flow")
+async def legacy_flow(
+    legacy_id: str,
+    body: LegacyFlow,
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _find_by_legacy_id(db, legacy_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Legacy task not found: {legacy_id}")
+
+    bus = await get_event_bus()
+    svc = TaskService(db, bus)
+    await svc.add_flow_entry(task.id, body.from_dept, body.to_dept, body.remark)
+    return {"message": "ok"}
+
+
+@router.post("/by-legacy/{legacy_id}/block")
+async def legacy_block(
+    legacy_id: str,
+    body: LegacyBlock,
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _find_by_legacy_id(db, legacy_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Legacy task not found: {legacy_id}")
+
+    bus = await get_event_bus()
+    svc = TaskService(db, bus)
+    await svc.block_task(task.id, body.reason, body.agent)
+    return {"message": "ok"}
+
+
+@router.post("/by-legacy/{legacy_id}/done")
+async def legacy_done(
+    legacy_id: str,
+    body: LegacyDone,
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _find_by_legacy_id(db, legacy_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Legacy task not found: {legacy_id}")
+
+    bus = await get_event_bus()
+    svc = TaskService(db, bus)
+    await svc.complete_task_legacy(legacy_id, body.output, body.summary, body.agent)
     return {"message": "ok"}
 
 

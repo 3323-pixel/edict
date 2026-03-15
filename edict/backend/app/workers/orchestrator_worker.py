@@ -16,10 +16,11 @@ import asyncio
 import logging
 import signal
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from ..config import get_settings
 from ..db import async_session
-from ..models.task import TaskState, STATE_AGENT_MAP, ORG_AGENT_MAP
+from ..models.task import Task, TaskState, STATE_AGENT_MAP, ORG_AGENT_MAP
 from ..services.event_bus import (
     EventBus,
     TOPIC_TASK_CREATED,
@@ -34,6 +35,7 @@ log = logging.getLogger("edict.orchestrator")
 
 GROUP = "orchestrator"
 CONSUMER = "orch-1"
+MAX_STALL_RETRY = 3
 
 # 需要监听的 topics
 WATCHED_TOPICS = [
@@ -156,7 +158,7 @@ class OrchestratorWorker:
         agent = STATE_AGENT_MAP.get(new_state)
 
         # 如果进入 assigned 状态，需要查找六部对应 agent
-        if new_state == TaskState.ASSIGNED:
+        if new_state == TaskState.Assigned:
             # 从 payload 获取 assignee_org
             org = payload.get("assignee_org", "")
             agent = ORG_AGENT_MAP.get(org, agent)
@@ -181,10 +183,63 @@ class OrchestratorWorker:
         log.info(f"🎉 Task {task_id} completed. trace={trace_id}")
 
     async def _on_task_stalled(self, payload: dict, trace_id: str):
-        """任务停滞 → 通知尚书或重新派发。"""
+        """任务停滞 → 重新派发（最多 MAX_STALL_RETRY 次），超限则置为 Blocked。"""
         task_id = payload.get("task_id")
-        log.warning(f"⏸️ Task {task_id} stalled! Requesting intervention. trace={trace_id}")
-        # TODO: 实现停滞任务的自动恢复策略
+        log.warning(f"⏸️ Task {task_id} stalled! trace={trace_id}")
+
+        async with async_session() as db:
+            task = await db.get(Task, task_id)
+            if task is None:
+                log.warning(f"Stalled task {task_id} not found in DB")
+                return
+
+            # 只对活跃状态的任务做恢复
+            if task.state not in (TaskState.Doing, TaskState.Assigned):
+                log.info(f"Task {task_id} in state {task.state.value}, skip stall recovery")
+                return
+
+            scheduler = task.scheduler or {}
+            stall_retries = scheduler.get("stall_retries", 0)
+
+            now = datetime.now(timezone.utc)
+
+            if stall_retries >= MAX_STALL_RETRY:
+                # 超过重试上限 → 置为 Blocked
+                task.state = TaskState.Blocked
+                task.block = f"停滞超过 {MAX_STALL_RETRY} 次自动重试，请人工介入"
+                task.updated_at = now
+                await db.commit()
+                log.warning(
+                    f"Task {task_id} blocked after {MAX_STALL_RETRY} stall retries"
+                )
+            else:
+                # 增加重试计数 + 重新派发
+                scheduler["stall_retries"] = stall_retries + 1
+                scheduler["last_stall_retry_at"] = now.isoformat()
+                task.scheduler = scheduler
+                task.updated_at = now
+                await db.commit()
+
+                agent = STATE_AGENT_MAP.get(task.state)
+                if task.state == TaskState.Assigned:
+                    agent = ORG_AGENT_MAP.get(task.org, agent)
+                if agent:
+                    await self.bus.publish(
+                        topic=TOPIC_TASK_DISPATCH,
+                        trace_id=trace_id,
+                        event_type="task.dispatch.request",
+                        producer="orchestrator",
+                        payload={
+                            "task_id": task_id,
+                            "agent": agent,
+                            "state": task.state.value,
+                            "message": f"停滞任务重新派发（第 {stall_retries + 1} 次）",
+                        },
+                    )
+                log.info(
+                    f"Task {task_id} redispatched to {agent} "
+                    f"(retry {stall_retries + 1}/{MAX_STALL_RETRY})"
+                )
 
 
 async def run_orchestrator():

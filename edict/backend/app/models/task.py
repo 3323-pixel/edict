@@ -92,12 +92,12 @@ class Task(Base):
     archived = Column(Boolean, default=False, index=True)
 
     # JSONB 灵活字段
-    flow_log = Column(JSONB, default=list, comment="流转日志 [{at, from, to, remark}]")
-    progress_log = Column(JSONB, default=list, comment="进展日志 [{at, agent, text, todos}]")
-    todos = Column(JSONB, default=list, comment="子任务 [{id, title, status, detail}]")
-    scheduler = Column(JSONB, default=dict, comment="调度器元数据")
+    flow_log = Column(JSONB, default=lambda: [], comment="流转日志 [{at, from, to, remark}]")
+    progress_log = Column(JSONB, default=lambda: [], comment="进展日志 [{at, agent, text, todos}]")
+    todos = Column(JSONB, default=lambda: [], comment="子任务 [{id, title, status, detail}]")
+    scheduler = Column(JSONB, default=lambda: {}, comment="调度器元数据")
     template_id = Column(String(64), default="", comment="模板ID")
-    template_params = Column(JSONB, default=dict, comment="模板参数")
+    template_params = Column(JSONB, default=lambda: {}, comment="模板参数")
     ac = Column(Text, default="", comment="验收标准")
     target_dept = Column(String(64), default="", comment="目标部门")
 

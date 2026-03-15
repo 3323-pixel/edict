@@ -38,10 +38,40 @@ class TaskTransition(BaseModel):
 class TaskProgress(BaseModel):
     agent: str
     content: str
+    todos: list[dict] | None = None
+    tokens: int = 0
+    cost: float = 0.0
+    elapsed: int = 0
 
 
 class TaskTodoUpdate(BaseModel):
     todos: list[dict]
+
+
+class TaskFlow(BaseModel):
+    from_dept: str
+    to_dept: str
+    remark: str = ""
+
+
+class TaskBlock(BaseModel):
+    reason: str
+    agent: str = "system"
+
+
+class TaskCreateLegacy(BaseModel):
+    legacy_id: str
+    title: str
+    state: str = "Taizi"
+    org: str = "太子"
+    official: str = ""
+    remark: str = ""
+
+
+class TaskDone(BaseModel):
+    output: str = ""
+    summary: str = ""
+    agent: str = "system"
 
 
 class TaskSchedulerUpdate(BaseModel):
@@ -49,21 +79,22 @@ class TaskSchedulerUpdate(BaseModel):
 
 
 class TaskOut(BaseModel):
-    task_id: str
-    trace_id: str
+    id: str
     title: str
-    description: str
     priority: str
     state: str
-    assignee_org: str | None
-    creator: str
-    tags: list[str]
+    org: str
+    official: str
+    now: str
+    eta: str
+    block: str
+    output: str
+    archived: bool
     flow_log: list
     progress_log: list
     todos: list
-    scheduler: dict | None
-    created_at: str
-    updated_at: str
+    createdAt: str
+    updatedAt: str
 
     class Config:
         from_attributes = True
@@ -132,7 +163,7 @@ async def create_task(
         tags=body.tags,
         meta=body.meta,
     )
-    return {"task_id": str(task.task_id), "trace_id": str(task.trace_id), "state": task.state.value}
+    return {"task_id": task.id, "state": task.state.value}
 
 
 @router.get("/{task_id}")
@@ -167,7 +198,7 @@ async def transition_task(
             agent=body.agent,
             reason=body.reason,
         )
-        return {"task_id": str(task.task_id), "state": task.state.value, "message": "ok"}
+        return {"task_id": task.id, "state": task.state.value, "message": "ok"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -227,3 +258,59 @@ async def update_scheduler(
         return {"message": "ok"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── flow/block (UUID-based) ──
+
+@router.post("/{task_id}/flow")
+async def add_flow(
+    task_id: uuid.UUID,
+    body: TaskFlow,
+    svc: TaskService = Depends(get_task_service),
+):
+    """追加流转记录。"""
+    try:
+        await svc.add_flow_entry(str(task_id), body.from_dept, body.to_dept, body.remark)
+        return {"message": "ok"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/{task_id}/block")
+async def block_task(
+    task_id: uuid.UUID,
+    body: TaskBlock,
+    svc: TaskService = Depends(get_task_service),
+):
+    """将任务置为 Blocked。"""
+    try:
+        await svc.block_task(str(task_id), body.reason, body.agent)
+        return {"message": "ok"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── Legacy ID 创建路由 ──
+
+@router.post("/legacy", status_code=201)
+async def create_task_legacy(
+    body: TaskCreateLegacy,
+    svc: TaskService = Depends(get_task_service),
+):
+    """用 JJC-* 风格 ID 创建任务。"""
+    try:
+        state = TaskState(body.state)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid state: {body.state}")
+    try:
+        task = await svc.create_task_legacy(
+            legacy_id=body.legacy_id,
+            title=body.title,
+            state=state,
+            org=body.org,
+            official=body.official,
+            remark=body.remark,
+        )
+        return {"task_id": task.id, "state": task.state.value}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

@@ -15,6 +15,7 @@ import {
   type SubConfig,
   type ChangeLogEntry,
 } from './api';
+import { edictWS } from './ws';
 
 // ── Pipeline Definition (PIPE) ──
 
@@ -288,9 +289,15 @@ interface AppStore {
   loadMorning: () => Promise<void>;
   loadSubConfig: () => Promise<void>;
   loadAll: () => Promise<void>;
+
+  // WebSocket
+  wsConnected: boolean;
+  connectWS: () => void;
+  disconnectWS: () => void;
 }
 
 let _toastId = 0;
+let _wsListener: ((event: { type: string; topic?: string }) => void) | null = null;
 
 export const useStore = create<AppStore>((set, get) => ({
   liveStatus: null,
@@ -310,6 +317,8 @@ export const useStore = create<AppStore>((set, get) => ({
   countdown: 5,
 
   toasts: [],
+
+  wsConnected: false,
 
   setActiveTab: (tab) => {
     set({ activeTab: tab });
@@ -332,6 +341,29 @@ export const useStore = create<AppStore>((set, get) => ({
     setTimeout(() => {
       set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
     }, 3000);
+  },
+
+  connectWS: () => {
+    if (_wsListener) {
+      return;
+    }
+    _wsListener = (event) => {
+      if (event.type === 'event' && event.topic && event.topic.startsWith('task.')) {
+        get().loadLive();
+      }
+    };
+    edictWS.onEvent(_wsListener);
+    edictWS.connect();
+    set({ wsConnected: true });
+  },
+
+  disconnectWS: () => {
+    if (_wsListener) {
+      edictWS.offEvent(_wsListener);
+      _wsListener = null;
+    }
+    edictWS.disconnect();
+    set({ wsConnected: false });
   },
 
   loadLive: async () => {
@@ -408,7 +440,9 @@ let _cdTimer: ReturnType<typeof setInterval> | null = null;
 
 export function startPolling() {
   if (_cdTimer) return;
-  useStore.getState().loadAll();
+  const s = useStore.getState();
+  s.loadAll();
+  s.connectWS();
   _cdTimer = setInterval(() => {
     const s = useStore.getState();
     const cd = s.countdown - 1;
@@ -426,6 +460,7 @@ export function stopPolling() {
     clearInterval(_cdTimer);
     _cdTimer = null;
   }
+  useStore.getState().disconnectWS();
 }
 
 // ── Utility ──

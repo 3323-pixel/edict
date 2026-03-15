@@ -7,6 +7,7 @@
 - 解决旧架构 daemon 线程丢失导致派发永久中断的根因
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -65,7 +66,8 @@ class EventBus:
 
     @property
     def redis(self) -> aioredis.Redis:
-        assert self._redis is not None, "EventBus not connected. Call connect() first."
+        if self._redis is None:
+            raise RuntimeError("EventBus not connected. Call connect() first.")
         return self._redis
 
     def _stream_key(self, topic: str) -> str:
@@ -141,9 +143,16 @@ class EventBus:
                 for entry_id, data in messages:
                     # 反序列化 JSON 字段
                     if "payload" in data:
-                        data["payload"] = json.loads(data["payload"])
+                        try:
+                            data["payload"] = json.loads(data["payload"])
+                        except json.JSONDecodeError:
+                            log.warning(f"Failed to parse payload JSON for entry {entry_id}")
+                            data["payload"] = {}
                     if "meta" in data:
-                        data["meta"] = json.loads(data["meta"])
+                        try:
+                            data["meta"] = json.loads(data["meta"])
+                        except json.JSONDecodeError:
+                            data["meta"] = {}
                     events.append((entry_id, data))
         return events
 
@@ -195,11 +204,15 @@ class EventBus:
 
 # ── 全局单例 ──
 _bus: EventBus | None = None
+_bus_lock: asyncio.Lock | None = None
 
 
 async def get_event_bus() -> EventBus:
-    global _bus
-    if _bus is None:
-        _bus = EventBus()
-        await _bus.connect()
+    global _bus, _bus_lock
+    if _bus_lock is None:
+        _bus_lock = asyncio.Lock()
+    async with _bus_lock:
+        if _bus is None:
+            _bus = EventBus()
+            await _bus.connect()
     return _bus

@@ -31,3 +31,7 @@ edict/frontend/node_modules/
 # Backups
 *.bak*
 data
+
+# Local dev environments
+.venv-edict/
+.openclaw/workspace-state.json

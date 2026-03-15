@@ -142,7 +142,7 @@ async def task_websocket(ws: WebSocket, task_id: str):
 async def broadcast(event: dict):
     """向所有连接的 WebSocket 客户端广播事件（服务端内部调用用）。"""
     dead = set()
-    for ws in _connections:
+    for ws in list(_connections):
         try:
             await ws.send_json(event)
         except Exception:
