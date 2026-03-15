@@ -111,10 +111,13 @@ def setup_function():
 def test_create_calls_http_client():
     kb.cmd_create("TEST-001", "测试任务创建和查询功能验证", "Taizi", "太子", "太子")
 
-    assert FakeClient.calls[0][0] == "create_task"
-    assert FakeClient.calls[0][1]["legacy_id"] == "TEST-001"
-    assert FakeClient.calls[0][1]["title"] == "测试任务创建和查询功能验证"
-    assert FakeClient.calls[0][1]["state"] == "Taizi"
+    # 第一个调用是 get_task（ID 冲突检测），之后是 create_task
+    call_names = [c[0] for c in FakeClient.calls]
+    assert "create_task" in call_names
+    create_call = next(c for c in FakeClient.calls if c[0] == "create_task")
+    assert create_call[1]["legacy_id"] == "TEST-001"
+    assert create_call[1]["title"] == "测试任务创建和查询功能验证"
+    assert create_call[1]["state"] == "Taizi"
 
 
 def test_forward_updates_state_and_flow():
