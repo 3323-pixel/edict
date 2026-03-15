@@ -107,6 +107,74 @@ create_workspaces() {
     log "Workspace 已创建: $ws"
   done
 
+  # ── 共享 outputs 目录 ──
+  mkdir -p "$REPO_DIR/outputs"
+  for agent in "${AGENTS[@]}"; do
+    ws="$OC_HOME/workspace-$agent"
+    if [ -d "$ws/outputs" ] && [ ! -L "$ws/outputs" ]; then
+      rm -rf "$ws/outputs"
+    fi
+    if [ ! -e "$ws/outputs" ]; then
+      ln -s "$REPO_DIR/outputs" "$ws/outputs"
+    fi
+  done
+  log "共享 outputs 目录已链接到所有 Workspace"
+
+  # ── Agent Skills 链接 ──
+  EXT="$OC_HOME/extensions/openclaw-lark/skills"
+  if [ -d "$EXT" ]; then
+    declare -A SKILL_MAP=(
+      [zhongshu]="feishu-create-doc feishu-fetch-doc"
+      [menxia]="feishu-fetch-doc"
+      [gongbu]="feishu-create-doc"
+      [bingbu]="feishu-create-doc"
+      [xingbu]="feishu-im-read"
+      [hubu]="feishu-bitable"
+      [libu]="feishu-create-doc feishu-update-doc"
+      [libu_hr]="feishu-bitable"
+    )
+    for agent in "${!SKILL_MAP[@]}"; do
+      ws="$OC_HOME/workspace-$agent/skills"
+      mkdir -p "$ws"
+      for skill in ${SKILL_MAP[$agent]}; do
+        if [ -d "$EXT/$skill" ] && [ ! -e "$ws/$skill" ]; then
+          ln -sfn "$EXT/$skill" "$ws/$skill"
+        fi
+      done
+    done
+    log "Agent Skills 已链接到各 Workspace"
+  else
+    warn "未找到 openclaw-lark 扩展，跳过 Skills 链接"
+  fi
+
+  # ── 尚书省 dispatch skill ──
+  DISPATCH_DIR="$OC_HOME/workspace-shangshu/skills/dispatch"
+  if [ ! -f "$DISPATCH_DIR/SKILL.md" ]; then
+    mkdir -p "$DISPATCH_DIR"
+    cat > "$DISPATCH_DIR/SKILL.md" << 'DISPATCH_EOF'
+# dispatch — 尚书省任务派发路由
+
+## 六部路由表
+
+| 部门 | agent_id | 职责范围 |
+|------|----------|---------|
+| 工部 | gongbu | 开发/架构/代码/工程实现 |
+| 兵部 | bingbu | 基础设施/部署/安全/运维 |
+| 户部 | hubu | 数据分析/报表/成本/财务 |
+| 礼部 | libu | 文档/UI/对外沟通/公关 |
+| 刑部 | xingbu | 审查/测试/合规/质量 |
+| 吏部 | libu_hr | 人事/Agent管理/培训/考核 |
+
+## 派发规则
+
+1. 根据任务内容匹配最相关的部门
+2. 如果任务涉及多个部门，选择主要职责部门，其他作为协作
+3. 默认优先派发工部（开发类任务最多）
+4. 派发后用 `kanban_update.py flow` 记录流转
+DISPATCH_EOF
+    log "尚书省 dispatch skill 已创建"
+  fi
+
   # 通用 AGENTS.md（工作协议）
   for agent in "${AGENTS[@]}"; do
     cat > "$OC_HOME/workspace-$agent/AGENTS.md" << 'AGENTS_EOF'
