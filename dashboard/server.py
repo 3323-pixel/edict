@@ -78,20 +78,27 @@ def _sync_edict_states_to_json():
         if not tid or task.get('state') in ('Done', 'Cancelled'):
             continue
 
-        # 补偿重试：之前 EDICT 写入失败的任务
+        # 补偿重试：之前 EDICT 写入失败的任务（幂等：先查后建）
         if task.get('_edict_synced') is False:
-            retry_result = _edict_request('POST', '/api/tasks/legacy', {
-                'legacy_id': tid,
-                'title': task.get('title', ''),
-                'state': task.get('state', 'Taizi'),
-                'org': task.get('org', '太子'),
-                'official': task.get('official', ''),
-                'remark': f'补偿同步：{task.get("title", "")}',
-            })
-            if retry_result is not None:
-                del task['_edict_synced']
-                log.info(f'[EDICT] 补偿同步成功: {tid}')
+            existing = _edict_request('GET', f'/api/tasks/by-legacy/{tid}')
+            if existing and existing.get('id'):
+                # 任务实际已存在于 EDICT，直接清除标记
+                task.pop('_edict_synced', None)
+                log.info(f'[EDICT] 补偿检查：{tid} 已存在于 EDICT，清除 _edict_synced')
                 changed = True
+            else:
+                retry_result = _edict_request('POST', '/api/tasks/legacy', {
+                    'legacy_id': tid,
+                    'title': task.get('title', ''),
+                    'state': task.get('state', 'Taizi'),
+                    'org': task.get('org', '太子'),
+                    'official': task.get('official', ''),
+                    'remark': f'补偿同步：{task.get("title", "")}',
+                })
+                if retry_result is not None:
+                    task.pop('_edict_synced', None)
+                    log.info(f'[EDICT] 补偿创建成功: {tid}')
+                    changed = True
 
         edict_task = edict_index.get(tid)
         if not edict_task or not edict_task.get('state'):
@@ -104,7 +111,9 @@ def _sync_edict_states_to_json():
 
         # 检测任何变化：state/org 变更，或 EDICT 侧有更新的 updatedAt（同状态内 progress 推进）
         state_changed = new_state != task.get('state') or new_org != task.get('org')
-        progress_changed = edict_updated and edict_updated > (json_updated or '')
+        edict_dt = _parse_iso(edict_updated)
+        json_dt = _parse_iso(json_updated)
+        progress_changed = edict_dt is not None and (json_dt is None or edict_dt > json_dt)
 
         if state_changed or progress_changed:
             if state_changed:
