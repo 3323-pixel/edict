@@ -2,7 +2,7 @@
 # ══════════════════════════════════════════════════════════════
 # 三省六部 · OpenClaw Multi-Agent System 一键安装脚本
 # ══════════════════════════════════════════════════════════════
-set -e
+set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OC_HOME="$HOME/.openclaw"
