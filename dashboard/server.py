@@ -1543,7 +1543,7 @@ def _parse_activity_entry(item):
             if c.get('type') == 'text' and c.get('text') and not text:
                 text = str(c.get('text', '')).strip()
             elif c.get('type') == 'thinking' and c.get('thinking') and not thinking:
-                thinking = str(c.get('thinking', '')).strip()[:200]
+                thinking = str(c.get('thinking', '')).strip()[:500]
             elif c.get('type') == 'tool_use':
                 tool_calls.append({
                     'name': c.get('name', ''),
@@ -1553,7 +1553,7 @@ def _parse_activity_entry(item):
             return None
         entry = {'at': ts, 'kind': 'assistant'}
         if text:
-            entry['text'] = text[:300]
+            entry['text'] = text[:2000]
         if thinking:
             entry['thinking'] = thinking
         if tool_calls:
@@ -1568,13 +1568,13 @@ def _parse_activity_entry(item):
         output = ''
         for c in msg.get('content', []) or []:
             if c.get('type') == 'text' and c.get('text'):
-                output = str(c.get('text', '')).strip()[:200]
+                output = str(c.get('text', '')).strip()[:1000]
                 break
         if not output:
             for key in ('output', 'stdout', 'stderr', 'message'):
                 val = details.get(key)
                 if isinstance(val, str) and val.strip():
-                    output = val.strip()[:200]
+                    output = val.strip()[:1000]
                     break
 
         entry = {
