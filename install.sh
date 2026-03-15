@@ -120,9 +120,15 @@ create_workspaces() {
   done
   log "共享 outputs 目录已链接到所有 Workspace"
 
-  # ── Agent Skills 链接 ──
+  # ── Agent Skills 链接（仅在配置了飞书时生效） ──
   EXT="$OC_HOME/extensions/openclaw-lark/skills"
-  if [ -d "$EXT" ]; then
+  FEISHU_CONFIGURED=$(python3 -c "
+import json, pathlib
+cfg = json.loads((pathlib.Path.home() / '.openclaw/openclaw.json').read_text())
+ch = cfg.get('channels', {}).get('feishu', {})
+print('yes' if ch.get('enabled') and ch.get('accounts') else 'no')
+" 2>/dev/null || echo "no")
+  if [ -d "$EXT" ] && [ "$FEISHU_CONFIGURED" = "yes" ]; then
     declare -A SKILL_MAP=(
       [zhongshu]="feishu-create-doc feishu-fetch-doc"
       [menxia]="feishu-fetch-doc"
@@ -144,7 +150,7 @@ create_workspaces() {
     done
     log "Agent Skills 已链接到各 Workspace"
   else
-    warn "未找到 openclaw-lark 扩展，跳过 Skills 链接"
+    info "未配置飞书或未安装 openclaw-lark 扩展，跳过飞书 Skills 链接"
   fi
 
   # ── 尚书省 dispatch skill ──
