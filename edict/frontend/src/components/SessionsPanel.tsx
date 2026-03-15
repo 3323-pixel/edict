@@ -136,7 +136,7 @@ export default function SessionsPanel() {
                 </div>
                 <div className="sc-title">{title}</div>
                 {msg && (
-                  <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 8, borderLeft: '2px solid var(--line)', paddingLeft: 8, maxHeight: 40, overflow: 'hidden' }}>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 8, borderLeft: '2px solid var(--line)', paddingLeft: 8, maxHeight: 200, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
                     {msg}
                   </div>
                 )}
