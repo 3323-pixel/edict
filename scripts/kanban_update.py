@@ -25,7 +25,7 @@
   # 太子专用：转交任务（同时更新状态+流转日志）
   python3 kanban_update.py forward JJC-20260223-012 Zhongshu "太子接旨，整理需求后转交中书省起草方案"
 """
-import sys, datetime, logging, os, re, pathlib
+import sys, datetime, logging, os, re, pathlib, subprocess
 
 log = logging.getLogger('kanban')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
@@ -132,6 +132,74 @@ def _infer_agent_id_from_runtime():
     return ''
 
 
+def _resolve_output_path(output_path: str) -> pathlib.Path | None:
+    """尽量解析产出文件路径。"""
+    if not output_path:
+        return None
+    raw = pathlib.Path(output_path)
+    candidates = []
+    if raw.is_absolute():
+        candidates.append(raw)
+    else:
+        candidates.extend([
+            pathlib.Path.cwd() / raw,
+            pathlib.Path(__file__).resolve().parent.parent / raw,
+            pathlib.Path(__file__).resolve().parent.parent / 'outputs' / raw.name,
+        ])
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _extract_feishu_doc_url(text: str) -> str:
+    match = re.search(r'https://www\.feishu\.cn/docx/[A-Za-z0-9]+', text or '')
+    return match.group(0) if match else ''
+
+
+def _maybe_create_feishu_doc_link(task_id: str, output_path: str) -> str:
+    """尝试将本地 Markdown 产物上传为飞书云文档，成功返回链接。"""
+    if os.getenv('EDICT_DISABLE_FEISHU_DOC_EXPORT') == '1':
+        return ''
+    file_path = _resolve_output_path(output_path)
+    if file_path is None or file_path.suffix.lower() != '.md':
+        return ''
+
+    title = file_path.stem.replace('_', ' ')
+    try:
+        first_line = file_path.read_text(encoding='utf-8', errors='ignore').splitlines()[:1]
+        if first_line:
+            heading = first_line[0].lstrip('#').strip()
+            if heading:
+                title = heading
+    except Exception:
+        pass
+
+    doc_agent = os.getenv('OPENCLAW_DOC_AGENT', 'taizi')
+    prompt = (
+        f'读取本机文件 {file_path} 的内容，使用飞书创建云文档工具创建一个新文档，'
+        f'标题设为《{title}》，任务ID为 {task_id}。'
+        '如果成功，只回复文档直链 URL；如果失败，只回复 FAIL: 原因。'
+    )
+    try:
+        result = subprocess.run(
+            ['openclaw', 'agent', '--agent', doc_agent, '-m', prompt, '--timeout', '180'],
+            capture_output=True,
+            text=True,
+            timeout=210,
+        )
+        combined = '\n'.join(part for part in [result.stdout, result.stderr] if part)
+        url = _extract_feishu_doc_url(combined)
+        if url:
+            log.info(f'🔗 {task_id} 已生成飞书云文档: {url}')
+            return url
+        if combined.strip():
+            log.warning(f'⚠️ {task_id} 飞书云文档创建失败: {combined.strip()[:500]}')
+    except Exception as e:
+        log.warning(f'⚠️ {task_id} 飞书云文档创建异常: {e}')
+    return ''
+
+
 def _is_valid_task_title(title):
     """校验标题是否足够作为一个旨意任务。"""
     t = (title or '').strip()
@@ -198,6 +266,27 @@ def cmd_create(task_id, title, state, org, official, remark=None):
     clean_remark = _sanitize_remark(remark) if remark else f"下旨：{title}"
     agent_id = _infer_agent_id_from_runtime()
     client = EdictClient()
+
+    # ID 冲突检测：如果 EDICT 已有这个 ID，自动递增
+    original_id = task_id
+    for attempt in range(20):
+        try:
+            existing = client.get_task(task_id)
+            if existing and existing.get('id'):
+                # ID 已存在，递增序号
+                parts = task_id.rsplit('-', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    next_seq = int(parts[1]) + 1
+                    task_id = f'{parts[0]}-{next_seq:03d}'
+                else:
+                    task_id = f'{task_id}-{attempt+2}'
+                continue
+        except Exception:
+            pass
+        break  # ID 不存在或查询失败，可以用
+    if task_id != original_id:
+        log.info(f'📋 ID 冲突：{original_id} → {task_id}')
+
     try:
         client.create_task(
             legacy_id=task_id,
@@ -277,7 +366,9 @@ def cmd_done(task_id, output_path='', summary=''):
     agent_id = _infer_agent_id_from_runtime()
     client = EdictClient()
     try:
-        client.done(task_id, output_path, summary or '任务已完成', agent_id or 'system')
+        feishu_doc_url = _maybe_create_feishu_doc_link(task_id, output_path)
+        final_output = feishu_doc_url or output_path
+        client.done(task_id, final_output, summary or '任务已完成', agent_id or 'system')
         log.info(f'✅ {task_id} 已完成')
         _notify_dashboard_sync()
     except Exception as e:
