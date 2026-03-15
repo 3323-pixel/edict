@@ -25,6 +25,185 @@ from utils import validate_url
 log = logging.getLogger('server')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
+# ── EDICT Backend 同步 ──
+EDICT_API_URL = os.environ.get('EDICT_API_URL', 'http://localhost:8000').rstrip('/')
+EDICT_API_TIMEOUT = float(os.environ.get('EDICT_API_TIMEOUT', '2'))
+
+def _edict_request(method, path, data=None):
+    """同步调用 EDICT Backend API，失败返回 None 不阻塞主流程。"""
+    import urllib.request, urllib.error
+    url = f'{EDICT_API_URL}{path}'
+    body = json.dumps(data, ensure_ascii=False).encode() if data else None
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=EDICT_API_TIMEOUT) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as e:
+        log.warning(f'[EDICT] {method} {path} failed: {e}')
+        return None
+
+def _index_edict_tasks(payload):
+    """将 EDICT /api/tasks/live-status 响应归一化为 task_id -> task dict。"""
+    if not isinstance(payload, dict):
+        return {}
+
+    indexed = {}
+    for bucket in ('tasks', 'completed_tasks'):
+        data = payload.get(bucket, {})
+        if isinstance(data, dict):
+            for task_id, task in data.items():
+                if isinstance(task, dict):
+                    indexed[str(task.get('id') or task_id)] = task
+        elif isinstance(data, list):
+            for task in data:
+                if isinstance(task, dict) and task.get('id'):
+                    indexed[str(task['id'])] = task
+    return indexed
+
+def _sync_edict_states_to_json():
+    """从 EDICT DB 同步任务状态回 JSON，防止 scheduler 误判。"""
+    tasks = load_tasks()
+    if not tasks:
+        return False
+
+    edict_payload = _edict_request('GET', '/api/tasks/live-status')
+    edict_index = _index_edict_tasks(edict_payload)
+    if not edict_index:
+        return False
+
+    changed = False
+    for task in tasks:
+        tid = task.get('id', '')
+        if not tid or task.get('state') in ('Done', 'Cancelled'):
+            continue
+        edict_task = edict_index.get(tid)
+        if edict_task and edict_task.get('state'):
+            new_state = edict_task['state']
+            new_org = edict_task.get('org', '')
+            if new_state != task.get('state') or new_org != task.get('org'):
+                old_state = task.get('state')
+                task['state'] = new_state
+                if new_org:
+                    task['org'] = new_org
+                if edict_task.get('now'):
+                    task['now'] = edict_task['now']
+                task['updatedAt'] = now_iso()
+                # 重置 scheduler 停滞计时
+                sched = task.get('_scheduler', {})
+                sched['lastProgressAt'] = now_iso()
+                sched['stallSince'] = None
+                sched['retryCount'] = 0
+                sched['escalationLevel'] = 0
+                task['_scheduler'] = sched
+                log.info(f'[EDICT→JSON] {tid} state: {old_state} → {new_state}')
+                changed = True
+    if changed:
+        save_tasks(tasks)
+    return changed
+
+def _output_meta(path):
+    p = pathlib.Path(path)
+    if not p.exists():
+        return {"exists": False, "lastModified": None}
+    ts = datetime.datetime.fromtimestamp(p.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+    return {"exists": True, "lastModified": ts}
+
+def _build_live_status_payload(tasks=None):
+    """生成当前 live-status 响应，避免依赖异步刷新的旧缓存文件。"""
+    officials_data = read_json(DATA / 'officials_stats.json', {})
+    officials = officials_data.get('officials', []) if isinstance(officials_data, dict) else officials_data
+    if tasks is None:
+        tasks = load_tasks()
+        if not tasks:
+            tasks = read_json(DATA / 'tasks.json', [])
+
+    sync_status = read_json(DATA / 'sync_status.json', {})
+    org_map = {}
+    for official in officials:
+        label = official.get('label', official.get('name', ''))
+        if label:
+            org_map[label] = label
+
+    now_ts = datetime.datetime.now(datetime.timezone.utc)
+    for task in tasks:
+        task['org'] = task.get('org') or org_map.get(task.get('official', ''), '')
+        task['outputMeta'] = _output_meta(task.get('output', ''))
+
+        if task.get('state') in ('Doing', 'Assigned', 'Review'):
+            updated_raw = task.get('updatedAt') or task.get('sourceMeta', {}).get('updatedAt')
+            age_sec = None
+            if updated_raw:
+                try:
+                    if isinstance(updated_raw, (int, float)):
+                        updated_dt = datetime.datetime.fromtimestamp(updated_raw / 1000, tz=datetime.timezone.utc)
+                    else:
+                        updated_dt = datetime.datetime.fromisoformat(str(updated_raw).replace('Z', '+00:00'))
+                    age_sec = (now_ts - updated_dt).total_seconds()
+                except Exception:
+                    pass
+            if age_sec is None:
+                task['heartbeat'] = {'status': 'unknown', 'label': '⚪ 未知', 'ageSec': None}
+            elif age_sec < 180:
+                task['heartbeat'] = {'status': 'active', 'label': f'🟢 活跃 {int(age_sec//60)}分钟前', 'ageSec': int(age_sec)}
+            elif age_sec < 600:
+                task['heartbeat'] = {'status': 'warn', 'label': f'🟡 可能停滞 {int(age_sec//60)}分钟前', 'ageSec': int(age_sec)}
+            else:
+                task['heartbeat'] = {'status': 'stalled', 'label': f'🔴 已停滞 {int(age_sec//60)}分钟', 'ageSec': int(age_sec)}
+        else:
+            task['heartbeat'] = None
+
+    today_str = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
+
+    def _is_today_done(task):
+        if task.get('state') != 'Done':
+            return False
+        updated_at = task.get('updatedAt', '')
+        if isinstance(updated_at, str) and updated_at[:10] == today_str:
+            return True
+        last_modified = task.get('outputMeta', {}).get('lastModified', '')
+        if isinstance(last_modified, str) and last_modified[:10] == today_str:
+            return True
+        return False
+
+    today_done = sum(1 for task in tasks if _is_today_done(task))
+    total_done = sum(1 for task in tasks if task.get('state') == 'Done')
+    in_progress = sum(1 for task in tasks if task.get('state') in ['Doing', 'Review', 'Next', 'Blocked'])
+    blocked = sum(1 for task in tasks if task.get('state') == 'Blocked')
+
+    history = []
+    for task in tasks:
+        if task.get('state') == 'Done':
+            last_modified = task.get('outputMeta', {}).get('lastModified')
+            history.append({
+                'at': last_modified or '未知',
+                'official': task.get('official'),
+                'task': task.get('title'),
+                'out': task.get('output'),
+                'qa': '通过' if task.get('outputMeta', {}).get('exists') else '待补成果'
+            })
+
+    return {
+        'generatedAt': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'taskSource': 'tasks_source.json' if (DATA / 'tasks_source.json').exists() else 'tasks.json',
+        'officials': officials,
+        'tasks': tasks,
+        'history': history,
+        'metrics': {
+            'officialCount': len(officials),
+            'todayDone': today_done,
+            'totalDone': total_done,
+            'inProgress': in_progress,
+            'blocked': blocked
+        },
+        'syncStatus': sync_status,
+        'health': {
+            'syncOk': bool(sync_status.get('ok', False)),
+            'syncLatencyMs': sync_status.get('durationMs'),
+            'missingFieldCount': len(sync_status.get('missingFields', {})),
+        }
+    }
+
 OCLAW_HOME = pathlib.Path.home() / '.openclaw'
 MAX_REQUEST_BODY = 1 * 1024 * 1024  # 1 MB
 ALLOWED_ORIGIN = None  # Set via --cors; None means restrict to localhost
@@ -594,6 +773,16 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
     save_tasks(tasks)
     log.info(f'创建任务: {task_id} | {title[:40]}')
 
+    # 同步到 EDICT Backend
+    _edict_request('POST', '/api/tasks/legacy', {
+        'legacy_id': task_id,
+        'title': title,
+        'state': 'Taizi',
+        'org': initial_org,
+        'official': official,
+        'remark': f'下旨：{title}',
+    })
+
     dispatch_for_state(task_id, new_task, 'Taizi', trigger='imperial-edict')
 
     return {'ok': True, 'taskId': task_id, 'message': f'旨意 {task_id} 已下达，正在派发给太子'}
@@ -1067,6 +1256,8 @@ def handle_scheduler_rollback(task_id, reason=''):
 
 def handle_scheduler_scan(threshold_sec=180):
     threshold_sec = max(30, int(threshold_sec or 180))
+    # 先从 EDICT DB 同步最新状态，防止误判 agent 已推进的任务
+    _sync_edict_states_to_json()
     tasks = load_tasks()
     now_dt = datetime.datetime.now(datetime.timezone.utc)
     pending_retries = []
@@ -2129,7 +2320,8 @@ class Handler(BaseHTTPRequestHandler):
             all_ok = all(checks.values())
             self.send_json({'status': 'ok' if all_ok else 'degraded', 'ts': now_iso(), 'checks': checks})
         elif p == '/api/live-status':
-            self.send_json(read_json(DATA / 'live_status.json'))
+            _sync_edict_states_to_json()
+            self.send_json(_build_live_status_payload())
         elif p == '/api/agent-config':
             self.send_json(read_json(DATA / 'agent_config.json'))
         elif p == '/api/model-change-log':
