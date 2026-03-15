@@ -77,27 +77,58 @@ def _sync_edict_states_to_json():
         tid = task.get('id', '')
         if not tid or task.get('state') in ('Done', 'Cancelled'):
             continue
+
+        # 补偿重试：之前 EDICT 写入失败的任务
+        if task.get('_edict_synced') is False:
+            retry_result = _edict_request('POST', '/api/tasks/legacy', {
+                'legacy_id': tid,
+                'title': task.get('title', ''),
+                'state': task.get('state', 'Taizi'),
+                'org': task.get('org', '太子'),
+                'official': task.get('official', ''),
+                'remark': f'补偿同步：{task.get("title", "")}',
+            })
+            if retry_result is not None:
+                del task['_edict_synced']
+                log.info(f'[EDICT] 补偿同步成功: {tid}')
+                changed = True
+
         edict_task = edict_index.get(tid)
-        if edict_task and edict_task.get('state'):
-            new_state = edict_task['state']
-            new_org = edict_task.get('org', '')
-            if new_state != task.get('state') or new_org != task.get('org'):
-                old_state = task.get('state')
-                task['state'] = new_state
-                if new_org:
-                    task['org'] = new_org
-                if edict_task.get('now'):
-                    task['now'] = edict_task['now']
-                task['updatedAt'] = now_iso()
-                # 重置 scheduler 停滞计时
-                sched = task.get('_scheduler', {})
-                sched['lastProgressAt'] = now_iso()
-                sched['stallSince'] = None
+        if not edict_task or not edict_task.get('state'):
+            continue
+
+        new_state = edict_task['state']
+        new_org = edict_task.get('org', '')
+        edict_updated = edict_task.get('updatedAt', '')
+        json_updated = task.get('updatedAt', '')
+
+        # 检测任何变化：state/org 变更，或 EDICT 侧有更新的 updatedAt（同状态内 progress 推进）
+        state_changed = new_state != task.get('state') or new_org != task.get('org')
+        progress_changed = edict_updated and edict_updated > (json_updated or '')
+
+        if state_changed or progress_changed:
+            if state_changed:
+                log.info(f'[EDICT→JSON] {tid} state: {task.get("state")} → {new_state}')
+            task['state'] = new_state
+            if new_org:
+                task['org'] = new_org
+            if edict_task.get('now'):
+                task['now'] = edict_task['now']
+            if edict_updated:
+                task['updatedAt'] = edict_updated
+            # 同步 progress_log（取 EDICT 最新）
+            edict_progress = edict_task.get('progress_log')
+            if edict_progress and isinstance(edict_progress, list):
+                task['progress_log'] = edict_progress
+            # 重置 scheduler 停滞计时
+            sched = task.get('_scheduler', {})
+            sched['lastProgressAt'] = edict_updated or now_iso()
+            sched['stallSince'] = None
+            if state_changed:
                 sched['retryCount'] = 0
                 sched['escalationLevel'] = 0
-                task['_scheduler'] = sched
-                log.info(f'[EDICT→JSON] {tid} state: {old_state} → {new_state}')
-                changed = True
+            task['_scheduler'] = sched
+            changed = True
     if changed:
         save_tasks(tasks)
     return changed
@@ -773,8 +804,8 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
     save_tasks(tasks)
     log.info(f'创建任务: {task_id} | {title[:40]}')
 
-    # 同步到 EDICT Backend
-    _edict_request('POST', '/api/tasks/legacy', {
+    # 同步到 EDICT Backend（失败时标记，不阻塞派发）
+    edict_result = _edict_request('POST', '/api/tasks/legacy', {
         'legacy_id': task_id,
         'title': title,
         'state': 'Taizi',
@@ -782,10 +813,18 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
         'official': official,
         'remark': f'下旨：{title}',
     })
+    if edict_result is None:
+        new_task['_edict_synced'] = False
+        log.warning(f'[EDICT] 任务 {task_id} 创建同步失败，已标记 _edict_synced=false')
+        # 重新保存带标记的任务
+        save_tasks(tasks)
 
     dispatch_for_state(task_id, new_task, 'Taizi', trigger='imperial-edict')
 
-    return {'ok': True, 'taskId': task_id, 'message': f'旨意 {task_id} 已下达，正在派发给太子'}
+    msg = f'旨意 {task_id} 已下达，正在派发给太子'
+    if edict_result is None:
+        msg += '（⚠️ EDICT同步失败，任务仅存在于本地看板）'
+    return {'ok': True, 'taskId': task_id, 'message': msg}
 
 
 def handle_review_action(task_id, action, comment=''):
