@@ -372,15 +372,28 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
         client.close()
 
 
+def _read_output_content(output_path, max_size=50*1024):
+    """读取产出文件内容（<50KB），存内容不存路径。"""
+    fp = _resolve_output_path(output_path)
+    if fp and fp.is_file() and fp.stat().st_size <= max_size:
+        try:
+            return fp.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+    return None
+
+
 def cmd_done(task_id, output_path='', summary=''):
     """标记任务完成"""
     agent_id = _infer_agent_id_from_runtime()
     client = EdictClient()
     try:
         feishu_doc_url = _maybe_create_feishu_doc_link(task_id, output_path)
-        final_output = feishu_doc_url or output_path
+        file_content = _read_output_content(output_path)
+        # 优先：文件内容（归档到 DB）> 飞书链接 > 文件路径
+        final_output = file_content or feishu_doc_url or output_path
         client.done(task_id, final_output, summary or '任务已完成', agent_id or 'system')
-        log.info(f'✅ {task_id} 已完成')
+        log.info(f'✅ {task_id} 已完成' + (' (内容已归档)' if file_content else ''))
         _notify_dashboard_sync(task_id)
     except Exception as e:
         log.error(f'❌ 完成任务失败 {task_id}: {e}')

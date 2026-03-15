@@ -24,6 +24,21 @@ const AGENT_LABELS: Record<string, string> = {
   zaochao: '钦天监',
 };
 
+function simpleMarkdown(text: string): string {
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^### (.+)$/gm, '<h4 style="margin:8px 0 4px;color:var(--text)">$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3 style="margin:10px 0 4px;color:var(--text)">$1</h3>')
+    .replace(/^# (.+)$/gm, '<h2 style="margin:12px 0 6px;color:var(--acc)">$1</h2>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`(.+?)`/g, '<code style="background:var(--panel);padding:1px 4px;border-radius:3px;font-size:11px">$1</code>')
+    .replace(/^[-*] (.+)$/gm, '<li style="margin-left:16px">$1</li>')
+    .replace(/^(\d+)\. (.+)$/gm, '<li style="margin-left:16px">$2</li>')
+    .replace(/\n{2,}/g, '<br/><br/>')
+    .replace(/\n/g, '<br/>');
+}
+
 const NEXT_LABELS: Record<string, string> = {
   Taizi: '中书省起草',
   Zhongshu: '门下省审议',
@@ -386,7 +401,11 @@ export default function TaskModal() {
           {task.output && task.output !== '-' && task.output !== '' && (
             <div className="m-section">
               <div className="m-sec-label">产出物</div>
-              <code>{task.output}</code>
+              {/^https?:\/\//.test(task.output) ? (
+                <a href={task.output} target="_blank" rel="noreferrer">{task.output}</a>
+              ) : (
+                <code>{task.output}</code>
+              )}
             </div>
           )}
           <OutputViewer taskId={task.id} />
@@ -489,14 +508,11 @@ function OutputViewer({ taskId }: { taskId: string }) {
       </div>
       {error && <div style={{ color: 'var(--danger)', fontSize: 11 }}>{error}</div>}
       {content && (
-        <pre style={{
+        <div style={{
           background: 'var(--panel2)', border: '1px solid var(--line)',
-          borderRadius: 8, padding: 12, fontSize: 12, lineHeight: 1.6,
-          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          borderRadius: 8, padding: 12, fontSize: 12, lineHeight: 1.8,
           maxHeight: 500, overflowY: 'auto',
-        }}>
-          {content}
-        </pre>
+        }} dangerouslySetInnerHTML={{ __html: simpleMarkdown(content) }} />
       )}
     </div>
   );
