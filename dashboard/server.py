@@ -63,10 +63,7 @@ def _index_edict_tasks(payload):
 
 def _sync_edict_states_to_json():
     """从 EDICT DB 同步任务状态回 JSON，防止 scheduler 误判。"""
-    tasks = load_tasks()
-    if not tasks:
-        return False
-
+    tasks = load_tasks() or []
     changed = False
 
     # 第一轮：补偿重试 _edict_synced=false 的任务（不依赖 live-status）
