@@ -35,15 +35,26 @@ _SCRIPTS_DIR = str(pathlib.Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-def _notify_dashboard_sync():
-    """通知 dashboard server 立即同步 EDICT 状态到 JSON，防止 scheduler 延迟误判。"""
+def _notify_dashboard_sync(task_id=None):
+    """通知 dashboard server 同步状态，并立即触发 agent 派发。"""
     import urllib.request
     try:
-        req = urllib.request.Request(
-            'http://localhost:7891/api/live-status', method='GET')
-        urllib.request.urlopen(req, timeout=3)
+        urllib.request.urlopen(
+            urllib.request.Request('http://localhost:7891/api/live-status', method='GET'),
+            timeout=3)
     except Exception:
-        pass  # dashboard 不在线时静默
+        pass
+    # 立即触发该任务的 agent 派发（不等 120 秒 scheduler 轮询）
+    if task_id:
+        try:
+            body = json.dumps({"taskId": task_id}).encode()
+            urllib.request.urlopen(
+                urllib.request.Request('http://localhost:7891/api/dispatch-task',
+                                      data=body, headers={'Content-Type': 'application/json'},
+                                      method='POST'),
+                timeout=5)
+        except Exception:
+            pass
 
 try:
     from edict_client import EdictClient
@@ -300,7 +311,7 @@ def cmd_create(task_id, title, state, org, official, remark=None):
         log.info(f'✅ 创建 {task_id} | {title[:30]} | state={state}')
         # 同步到 Dashboard 看板 JSON
         _sync_task_to_json(task_id, title, state, actual_org, official, clean_remark)
-        _notify_dashboard_sync()
+        _notify_dashboard_sync(task_id)
     except Exception as e:
         log.error(f'❌ 创建任务失败 {task_id}: {e}')
         sys.exit(1)
@@ -320,7 +331,7 @@ def cmd_state(task_id, new_state, now_text=None):
             reason=now_text or '',
         )
         log.info(f'✅ {task_id} 状态更新 → {new_state}')
-        _notify_dashboard_sync()
+        _notify_dashboard_sync(task_id)
     except Exception as e:
         log.error(f'❌ 状态更新失败 {task_id}: {e}')
         sys.exit(1)
@@ -353,7 +364,7 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
         client.add_flow(task_id, from_dept, to_dept, clean_remark)
         log.info(f'✅ {task_id} 流转: {from_dept} → {to_dept}' + (f' [state→{auto_state}]' if auto_state else ''))
         if auto_state:
-            _notify_dashboard_sync()
+            _notify_dashboard_sync(task_id)
     except Exception as e:
         log.error(f'❌ 流转记录失败 {task_id}: {e}')
         sys.exit(1)
@@ -370,7 +381,7 @@ def cmd_done(task_id, output_path='', summary=''):
         final_output = feishu_doc_url or output_path
         client.done(task_id, final_output, summary or '任务已完成', agent_id or 'system')
         log.info(f'✅ {task_id} 已完成')
-        _notify_dashboard_sync()
+        _notify_dashboard_sync(task_id)
     except Exception as e:
         log.error(f'❌ 完成任务失败 {task_id}: {e}')
         sys.exit(1)
@@ -511,7 +522,7 @@ def cmd_forward(task_id, new_state, remark):
                           agent=agent_id or '太子', reason=clean_remark)
         client.add_flow(task_id, from_org, to_org, clean_remark)
         log.info(f'✅ {task_id} 已转交 {from_org} → {to_org} [{new_state}]')
-        _notify_dashboard_sync()
+        _notify_dashboard_sync(task_id)
     except Exception as e:
         log.error(f'❌ 转交失败 {task_id}: {e}')
         sys.exit(1)

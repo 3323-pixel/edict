@@ -2855,6 +2855,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(result)
             return
 
+        if p == '/api/dispatch-task':
+            task_id = body.get('taskId', '').strip()
+            if not task_id:
+                self.send_json({'ok': False, 'error': 'taskId required'}, 400)
+                return
+            task = _edict_get_task(task_id)
+            if not task:
+                self.send_json({'ok': False, 'error': f'任务 {task_id} 不存在'}, 404)
+                return
+            state = task.get('state', '')
+            dispatch_for_state(task_id, task, state, trigger='api-dispatch')
+            self.send_json({'ok': True, 'message': f'{task_id} 已触发派发 ({state})'})
+            return
+
         if p == '/api/agent-wake':
             agent_id = body.get('agentId', '').strip()
             message = body.get('message', '').strip()
