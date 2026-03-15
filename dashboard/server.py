@@ -25,6 +25,58 @@ from utils import validate_url
 log = logging.getLogger('server')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
+# ── EDICT Backend 同步 ──
+EDICT_API_URL = os.environ.get('EDICT_API_URL', 'http://localhost:8000').rstrip('/')
+
+def _edict_request(method, path, data=None):
+    """同步调用 EDICT Backend API，失败返回 None 不阻塞主流程。"""
+    import urllib.request, urllib.error
+    url = f'{EDICT_API_URL}{path}'
+    body = json.dumps(data, ensure_ascii=False).encode() if data else None
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as e:
+        log.warning(f'[EDICT] {method} {path} failed: {e}')
+        return None
+
+def _sync_edict_states_to_json():
+    """从 EDICT DB 同步任务状态回 JSON，防止 scheduler 误判。"""
+    tasks = load_tasks()
+    if not tasks:
+        return False
+    changed = False
+    for task in tasks:
+        tid = task.get('id', '')
+        if not tid or task.get('state') in ('Done', 'Cancelled'):
+            continue
+        edict_task = _edict_request('GET', f'/api/tasks/by-legacy/{tid}')
+        if edict_task and edict_task.get('state'):
+            new_state = edict_task['state']
+            new_org = edict_task.get('org', '')
+            if new_state != task.get('state') or new_org != task.get('org'):
+                old_state = task.get('state')
+                task['state'] = new_state
+                if new_org:
+                    task['org'] = new_org
+                if edict_task.get('now'):
+                    task['now'] = edict_task['now']
+                task['updatedAt'] = now_iso()
+                # 重置 scheduler 停滞计时
+                sched = task.get('_scheduler', {})
+                sched['lastProgressAt'] = now_iso()
+                sched['stallSince'] = None
+                sched['retryCount'] = 0
+                sched['escalationLevel'] = 0
+                task['_scheduler'] = sched
+                log.info(f'[EDICT→JSON] {tid} state: {old_state} → {new_state}')
+                changed = True
+    if changed:
+        save_tasks(tasks)
+    return changed
+
 OCLAW_HOME = pathlib.Path.home() / '.openclaw'
 MAX_REQUEST_BODY = 1 * 1024 * 1024  # 1 MB
 ALLOWED_ORIGIN = None  # Set via --cors; None means restrict to localhost
@@ -594,6 +646,16 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
     save_tasks(tasks)
     log.info(f'创建任务: {task_id} | {title[:40]}')
 
+    # 同步到 EDICT Backend
+    _edict_request('POST', '/api/tasks/legacy', {
+        'legacy_id': task_id,
+        'title': title,
+        'state': 'Taizi',
+        'org': initial_org,
+        'official': official,
+        'remark': f'下旨：{title}',
+    })
+
     dispatch_for_state(task_id, new_task, 'Taizi', trigger='imperial-edict')
 
     return {'ok': True, 'taskId': task_id, 'message': f'旨意 {task_id} 已下达，正在派发给太子'}
@@ -1067,6 +1129,8 @@ def handle_scheduler_rollback(task_id, reason=''):
 
 def handle_scheduler_scan(threshold_sec=180):
     threshold_sec = max(30, int(threshold_sec or 180))
+    # 先从 EDICT DB 同步最新状态，防止误判 agent 已推进的任务
+    _sync_edict_states_to_json()
     tasks = load_tasks()
     now_dt = datetime.datetime.now(datetime.timezone.utc)
     pending_retries = []
@@ -2129,6 +2193,7 @@ class Handler(BaseHTTPRequestHandler):
             all_ok = all(checks.values())
             self.send_json({'status': 'ok' if all_ok else 'degraded', 'ts': now_iso(), 'checks': checks})
         elif p == '/api/live-status':
+            _sync_edict_states_to_json()
             self.send_json(read_json(DATA / 'live_status.json'))
         elif p == '/api/agent-config':
             self.send_json(read_json(DATA / 'agent_config.json'))
