@@ -387,9 +387,9 @@ export default function TaskModal() {
             <div className="m-section">
               <div className="m-sec-label">产出物</div>
               <code>{task.output}</code>
-              <OutputViewer taskId={task.id} />
             </div>
           )}
+          <OutputViewer taskId={task.id} />
 
           {/* Live Activity */}
           <LiveActivitySection data={activityData} isDone={['Done', 'Cancelled'].includes(task.state)} logRef={logRef} />

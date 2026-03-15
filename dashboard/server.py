@@ -1891,39 +1891,63 @@ def _compute_todos_diff(prev_todos, curr_todos):
 
 
 def _get_task_output(task_id):
-    """读取任务产出文件内容。"""
+    """读取任务产出内容：优先文件 → EDICT DB → JSON now 字段。"""
     tasks = load_tasks()
     task = next((t for t in tasks if t.get('id') == task_id), None)
-    if not task:
-        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-    output_path = (task.get('output') or '').strip()
-    if not output_path or output_path == '-':
-        # 尝试从 now 字段提取摘要作为内容
+    output_path = (task.get('output') or '').strip() if task else ''
+
+    # 1. 尝试读文件
+    if output_path and output_path != '-':
+        search_paths = [
+            pathlib.Path(output_path),
+            BASE.parent / 'outputs' / pathlib.Path(output_path).name,
+            BASE.parent / output_path.lstrip('/'),
+        ]
+        for ws in (OCLAW_HOME).glob('workspace-*/outputs'):
+            search_paths.append(ws / pathlib.Path(output_path).name)
+        fname = pathlib.Path(output_path).name
+        for ws in (OCLAW_HOME).glob('workspace-*'):
+            search_paths.append(ws / fname)
+        for fp in search_paths:
+            if fp.is_file():
+                try:
+                    content = fp.read_text(encoding='utf-8', errors='replace')
+                    return {'ok': True, 'taskId': task_id, 'source': str(fp), 'content': content[:10000]}
+                except Exception:
+                    pass
+
+    # 2. 尝试从 EDICT DB 拉取
+    edict_task = _edict_request('GET', f'/api/tasks/by-legacy/{task_id}')
+    if edict_task:
+        # 检查 EDICT 的 output 字段是否有文件路径
+        edict_output = (edict_task.get('output') or '').strip()
+        if edict_output and edict_output != '-':
+            for ws in (OCLAW_HOME).glob('workspace-*'):
+                fp = ws / pathlib.Path(edict_output).name
+                if fp.is_file():
+                    try:
+                        content = fp.read_text(encoding='utf-8', errors='replace')
+                        return {'ok': True, 'taskId': task_id, 'source': str(fp), 'content': content[:10000]}
+                    except Exception:
+                        pass
+        # 用 EDICT 的 now + progress_log 拼接报告
+        parts = []
+        if edict_task.get('now'):
+            parts.append(edict_task['now'])
+        for p in (edict_task.get('progress_log') or [])[-5:]:
+            c = p.get('content', '')
+            if c and len(c) > 10:
+                parts.append(f"[{p.get('agent','')}] {c}")
+        if parts:
+            return {'ok': True, 'taskId': task_id, 'source': 'edict', 'content': '\n\n'.join(parts)}
+
+    # 3. 回退到 JSON now 字段
+    if task:
         now = task.get('now', '')
-        if now and len(now) > 20:
+        if now and len(now) > 10:
             return {'ok': True, 'taskId': task_id, 'source': 'summary', 'content': now}
-        return {'ok': False, 'error': '该任务没有产出文件'}
-    # 搜索文件：原路径、outputs/ 目录、各 workspace
-    search_paths = [
-        pathlib.Path(output_path),
-        BASE.parent / 'outputs' / pathlib.Path(output_path).name,
-        BASE.parent / output_path.lstrip('/'),
-    ]
-    # 搜索所有 workspace 的 outputs
-    for ws in (OCLAW_HOME).glob('workspace-*/outputs'):
-        search_paths.append(ws / pathlib.Path(output_path).name)
-    # 直接搜索 workspace 下的文件名
-    fname = pathlib.Path(output_path).name
-    for ws in (OCLAW_HOME).glob('workspace-*'):
-        search_paths.append(ws / fname)
-    for fp in search_paths:
-        if fp.is_file():
-            try:
-                content = fp.read_text(encoding='utf-8', errors='replace')
-                return {'ok': True, 'taskId': task_id, 'source': str(fp), 'content': content[:10000]}
-            except Exception as e:
-                return {'ok': False, 'error': f'读取失败: {e}'}
-    return {'ok': False, 'error': f'文件未找到: {output_path}', 'searchedPaths': [str(p) for p in search_paths[:5]]}
+
+    return {'ok': False, 'error': '暂无产出内容'}
 
 
 def get_task_activity(task_id):
