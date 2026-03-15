@@ -3,7 +3,7 @@
 同步 openclaw.json 中的 agent 配置 → data/agent_config.json
 支持自动发现 agent workspace 下的 Skills 目录
 """
-import json, pathlib, datetime, logging
+import json, pathlib, datetime, logging, subprocess
 from file_lock import atomic_json_write
 
 log = logging.getLogger('sync_agent_config')
@@ -29,30 +29,58 @@ ID_LABEL = {
     'zaochao':  {'label': '钦天监', 'role': '朝报官',   'duty': '每日新闻采集与简报',  'emoji': '📰'},
 }
 
-KNOWN_MODELS = [
-    {'id': 'anthropic/claude-sonnet-4-6', 'label': 'Claude Sonnet 4.6', 'provider': 'Anthropic'},
-    {'id': 'anthropic/claude-opus-4-5',   'label': 'Claude Opus 4.5',   'provider': 'Anthropic'},
-    {'id': 'anthropic/claude-haiku-3-5',  'label': 'Claude Haiku 3.5',  'provider': 'Anthropic'},
-    {'id': 'openai/gpt-4o',               'label': 'GPT-4o',            'provider': 'OpenAI'},
-    {'id': 'openai/gpt-4o-mini',          'label': 'GPT-4o Mini',       'provider': 'OpenAI'},
-    {'id': 'openai-codex/gpt-5.3-codex',  'label': 'GPT-5.3 Codex',    'provider': 'OpenAI Codex'},
-    {'id': 'google/gemini-2.0-flash',     'label': 'Gemini 2.0 Flash',  'provider': 'Google'},
-    {'id': 'google/gemini-2.5-pro',       'label': 'Gemini 2.5 Pro',    'provider': 'Google'},
-    {'id': 'copilot/claude-sonnet-4',     'label': 'Claude Sonnet 4',   'provider': 'Copilot'},
-    {'id': 'copilot/claude-opus-4.5',     'label': 'Claude Opus 4.5',   'provider': 'Copilot'},
-    {'id': 'github-copilot/claude-opus-4.6', 'label': 'Claude Opus 4.6', 'provider': 'GitHub Copilot'},
-    {'id': 'copilot/gpt-4o',              'label': 'GPT-4o',            'provider': 'Copilot'},
-    {'id': 'copilot/gemini-2.5-pro',      'label': 'Gemini 2.5 Pro',    'provider': 'Copilot'},
-    {'id': 'copilot/o3-mini',             'label': 'o3-mini',           'provider': 'Copilot'},
-]
-
-
 def normalize_model(model_value, fallback='unknown'):
     if isinstance(model_value, str) and model_value:
         return model_value
     if isinstance(model_value, dict):
         return model_value.get('primary') or model_value.get('id') or fallback
     return fallback
+
+
+def infer_provider(model_id: str) -> str:
+    provider = (model_id or '').split('/', 1)[0]
+    provider_map = {
+        'anthropic': 'Anthropic',
+        'openai': 'OpenAI',
+        'openai-codex': 'OpenAI Codex',
+        'google': 'Google',
+        'copilot': 'Copilot',
+        'github-copilot': 'GitHub Copilot',
+    }
+    return provider_map.get(provider, provider.replace('-', ' ').title() or 'Unknown')
+
+
+def get_known_models():
+    """从 openclaw models list 读取当前允许选择的模型列表。"""
+    try:
+        result = subprocess.run(
+            ['openclaw', 'models', 'list', '--json'],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+        models = payload.get('models', []) if isinstance(payload, dict) else []
+        known = []
+        seen = set()
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            model_id = model.get('key', '')
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+            known.append({
+                'id': model_id,
+                'label': model.get('name') or model_id,
+                'provider': infer_provider(model_id),
+            })
+        if known:
+            return known
+    except Exception as e:
+        log.warning(f'cannot read openclaw models list: {e}')
+    return []
 
 
 def get_skills(workspace: str):
@@ -136,10 +164,25 @@ def main():
             'isDefaultModel': True,
         })
 
+    known_models = get_known_models()
+    if not known_models:
+        seen = set()
+        known_models = []
+        for agent in result:
+            model_id = normalize_model(agent.get('model', ''), '')
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+            known_models.append({
+                'id': model_id,
+                'label': model_id,
+                'provider': infer_provider(model_id),
+            })
+
     payload = {
         'generatedAt': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'defaultModel': default_model,
-        'knownModels': KNOWN_MODELS,
+        'knownModels': known_models,
         'agents': result,
     }
     DATA.mkdir(exist_ok=True)
