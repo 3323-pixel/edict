@@ -35,6 +35,16 @@ _SCRIPTS_DIR = str(pathlib.Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
+def _notify_dashboard_sync():
+    """通知 dashboard server 立即同步 EDICT 状态到 JSON，防止 scheduler 延迟误判。"""
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            'http://localhost:7891/api/live-status', method='GET')
+        urllib.request.urlopen(req, timeout=3)
+    except Exception:
+        pass  # dashboard 不在线时静默
+
 try:
     from edict_client import EdictClient
 except ImportError as _e:
@@ -180,6 +190,7 @@ def cmd_state(task_id, new_state, now_text=None):
             reason=now_text or '',
         )
         log.info(f'✅ {task_id} 状态更新 → {new_state}')
+        _notify_dashboard_sync()
     except Exception as e:
         log.error(f'❌ 状态更新失败 {task_id}: {e}')
         sys.exit(1)
@@ -201,13 +212,18 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     client = EdictClient()
     try:
         if auto_state:
+            # 先查当前状态，已是目标状态则跳过（避免 400 报错刷日志）
             try:
-                client.transition(legacy_id=task_id, new_state=auto_state,
-                                  agent=agent_id or from_dept, reason=clean_remark)
+                current = client.get_task(task_id)
+                if current.get('state') != auto_state:
+                    client.transition(legacy_id=task_id, new_state=auto_state,
+                                      agent=agent_id or from_dept, reason=clean_remark)
             except Exception:
-                pass  # 状态已经是目标状态时跳过
+                pass  # EDICT 不可用时静默跳过，flow_log 仍会写入
         client.add_flow(task_id, from_dept, to_dept, clean_remark)
         log.info(f'✅ {task_id} 流转: {from_dept} → {to_dept}' + (f' [state→{auto_state}]' if auto_state else ''))
+        if auto_state:
+            _notify_dashboard_sync()
     except Exception as e:
         log.error(f'❌ 流转记录失败 {task_id}: {e}')
         sys.exit(1)
@@ -222,6 +238,7 @@ def cmd_done(task_id, output_path='', summary=''):
     try:
         client.done(task_id, output_path, summary or '任务已完成', agent_id or 'system')
         log.info(f'✅ {task_id} 已完成')
+        _notify_dashboard_sync()
     except Exception as e:
         log.error(f'❌ 完成任务失败 {task_id}: {e}')
         sys.exit(1)
@@ -362,6 +379,7 @@ def cmd_forward(task_id, new_state, remark):
                           agent=agent_id or '太子', reason=clean_remark)
         client.add_flow(task_id, from_org, to_org, clean_remark)
         log.info(f'✅ {task_id} 已转交 {from_org} → {to_org} [{new_state}]')
+        _notify_dashboard_sync()
     except Exception as e:
         log.error(f'❌ 转交失败 {task_id}: {e}')
         sys.exit(1)
