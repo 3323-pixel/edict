@@ -227,43 +227,6 @@ def _is_valid_task_title(title):
     return True, ''
 
 
-def _sync_task_to_json(task_id, title, state, org, official, remark=''):
-    """将任务同步写入 tasks_source.json，让 Dashboard 看板能显示。"""
-    try:
-        data_dir = pathlib.Path(__file__).resolve().parent.parent / 'data'
-        tasks_file = data_dir / 'tasks_source.json'
-        if not tasks_file.exists():
-            return
-        # 用 file_lock 保证并发安全
-        try:
-            from file_lock import atomic_json_read, atomic_json_write
-        except ImportError:
-            return
-        tasks = atomic_json_read(tasks_file, [])
-        # 避免重复
-        if any(t.get('id') == task_id for t in tasks):
-            return
-        now_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        new_task = {
-            'id': task_id,
-            'title': title,
-            'official': official,
-            'org': org,
-            'state': state,
-            'now': f'等待处理',
-            'eta': '-',
-            'block': '无',
-            'output': '',
-            'priority': 'normal',
-            'flow_log': [{'at': now_ts, 'from': '皇上', 'to': org, 'remark': remark or f'下旨：{title}'}],
-            'updatedAt': now_ts,
-        }
-        tasks.insert(0, new_task)
-        atomic_json_write(tasks_file, tasks)
-        log.info(f'📋 {task_id} 已同步到看板 JSON')
-    except Exception as e:
-        log.warning(f'[JSON同步] {task_id} 写入失败: {e}')
-
 
 def cmd_create(task_id, title, state, org, official, remark=None):
     """新建任务（收旨时立即调用）"""
@@ -309,8 +272,6 @@ def cmd_create(task_id, title, state, org, official, remark=None):
             remark=clean_remark,
         )
         log.info(f'✅ 创建 {task_id} | {title[:30]} | state={state}')
-        # 同步到 Dashboard 看板 JSON
-        _sync_task_to_json(task_id, title, state, actual_org, official, clean_remark)
         _notify_dashboard_sync(task_id)
     except Exception as e:
         log.error(f'❌ 创建任务失败 {task_id}: {e}')
