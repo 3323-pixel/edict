@@ -387,6 +387,7 @@ export default function TaskModal() {
             <div className="m-section">
               <div className="m-sec-label">产出物</div>
               <code>{task.output}</code>
+              <OutputViewer taskId={task.id} />
             </div>
           )}
 
@@ -431,6 +432,72 @@ function TodoSection({ todos, todoDone, todoTotal }: { todos: TodoItem[]; todoDo
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function OutputViewer({ taskId }: { taskId: string }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [expanded, setExpanded] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/task-output/${taskId}`);
+      const data = await res.json();
+      if (data.ok && data.content) {
+        setContent(data.content);
+        setExpanded(true);
+      } else {
+        setError(data.error || '无法加载');
+      }
+    } catch {
+      setError('请求失败');
+    }
+    setLoading(false);
+  }, [taskId]);
+
+  if (!expanded) {
+    return (
+      <button
+        onClick={load}
+        disabled={loading}
+        style={{
+          marginTop: 8, padding: '4px 12px', fontSize: 11,
+          background: 'var(--acc)', color: '#fff', border: 'none',
+          borderRadius: 6, cursor: 'pointer', opacity: loading ? 0.6 : 1,
+        }}
+      >
+        {loading ? '加载中...' : '查看完整报告'}
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+        <span style={{ fontSize: 11, color: 'var(--acc)', fontWeight: 700 }}>报告内容</span>
+        <button
+          onClick={() => setExpanded(false)}
+          style={{ fontSize: 10, background: 'none', border: '1px solid var(--line)', borderRadius: 4, padding: '2px 8px', cursor: 'pointer', color: 'var(--muted)' }}
+        >
+          收起
+        </button>
+      </div>
+      {error && <div style={{ color: 'var(--danger)', fontSize: 11 }}>{error}</div>}
+      {content && (
+        <pre style={{
+          background: 'var(--panel2)', border: '1px solid var(--line)',
+          borderRadius: 8, padding: 12, fontSize: 12, lineHeight: 1.6,
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          maxHeight: 500, overflowY: 'auto',
+        }}>
+          {content}
+        </pre>
+      )}
     </div>
   );
 }

@@ -1890,6 +1890,42 @@ def _compute_todos_diff(prev_todos, curr_todos):
     return {'changed': changed, 'added': added, 'removed': removed}
 
 
+def _get_task_output(task_id):
+    """读取任务产出文件内容。"""
+    tasks = load_tasks()
+    task = next((t for t in tasks if t.get('id') == task_id), None)
+    if not task:
+        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    output_path = (task.get('output') or '').strip()
+    if not output_path or output_path == '-':
+        # 尝试从 now 字段提取摘要作为内容
+        now = task.get('now', '')
+        if now and len(now) > 20:
+            return {'ok': True, 'taskId': task_id, 'source': 'summary', 'content': now}
+        return {'ok': False, 'error': '该任务没有产出文件'}
+    # 搜索文件：原路径、outputs/ 目录、各 workspace
+    search_paths = [
+        pathlib.Path(output_path),
+        BASE.parent / 'outputs' / pathlib.Path(output_path).name,
+        BASE.parent / output_path.lstrip('/'),
+    ]
+    # 搜索所有 workspace 的 outputs
+    for ws in (OCLAW_HOME).glob('workspace-*/outputs'):
+        search_paths.append(ws / pathlib.Path(output_path).name)
+    # 直接搜索 workspace 下的文件名
+    fname = pathlib.Path(output_path).name
+    for ws in (OCLAW_HOME).glob('workspace-*'):
+        search_paths.append(ws / fname)
+    for fp in search_paths:
+        if fp.is_file():
+            try:
+                content = fp.read_text(encoding='utf-8', errors='replace')
+                return {'ok': True, 'taskId': task_id, 'source': str(fp), 'content': content[:10000]}
+            except Exception as e:
+                return {'ok': False, 'error': f'读取失败: {e}'}
+    return {'ok': False, 'error': f'文件未找到: {output_path}', 'searchedPaths': [str(p) for p in search_paths[:5]]}
+
+
 def get_task_activity(task_id):
     """获取任务的实时进展数据。
     数据来源：
@@ -2442,6 +2478,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': False, 'error': 'task_id required'}, 400)
             else:
                 self.send_json(get_task_activity(task_id))
+        elif p.startswith('/api/task-output/'):
+            task_id = p.replace('/api/task-output/', '')
+            if not task_id:
+                self.send_json({'ok': False, 'error': 'task_id required'}, 400)
+            else:
+                self.send_json(_get_task_output(task_id))
         elif p.startswith('/api/scheduler-state/'):
             task_id = p.replace('/api/scheduler-state/', '')
             if not task_id:
