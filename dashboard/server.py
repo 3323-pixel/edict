@@ -25,72 +25,32 @@ from utils import validate_url
 log = logging.getLogger('server')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
-# ── EDICT Backend 同步 ──
-EDICT_API_URL = os.environ.get('EDICT_API_URL', 'http://localhost:8000').rstrip('/')
-EDICT_API_TIMEOUT = float(os.environ.get('EDICT_API_TIMEOUT', '5'))
+# ── EDICT Backend 代理（从 handlers/edict_proxy.py 导入）──
+from handlers.edict_proxy import (
+    edict_request as _edict_request,
+    edict_get_task as _edict_get_task,
+    edict_update_scheduler as _edict_update_scheduler,
+    edict_transition as _edict_transition,
+    edict_add_flow as _edict_add_flow,
+    edict_archive as _edict_archive,
+    edict_get_active_tasks as _edict_get_active_tasks,
+    index_edict_tasks as _index_edict_tasks,
+)
 
-def _edict_request(method, path, data=None, timeout=None):
-    """同步调用 EDICT Backend API，失败返回 None 不阻塞主流程。"""
-    import urllib.request, urllib.error
-    url = f'{EDICT_API_URL}{path}'
-    body = json.dumps(data, ensure_ascii=False).encode() if data else None
-    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout or EDICT_API_TIMEOUT) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        log.warning(f'[EDICT] {method} {path} failed: {e}')
-        return None
-
-def _edict_get_task(task_id):
-    """从 EDICT 获取任务，返回 dict 或 None。"""
-    return _edict_request('GET', f'/api/tasks/by-legacy/{task_id}')
-
-def _edict_update_scheduler(task_id, sched):
-    """更新 EDICT 中任务的 scheduler 元数据。"""
-    return _edict_request('PUT', f'/api/tasks/by-legacy/{task_id}/scheduler', {'scheduler': sched})
-
-def _edict_transition(task_id, new_state, agent='system', reason=''):
-    """EDICT 状态流转。"""
-    return _edict_request('POST', f'/api/tasks/by-legacy/{task_id}/transition', {
-        'new_state': new_state, 'agent': agent, 'reason': reason,
-    })
-
-def _edict_add_flow(task_id, from_dept, to_dept, remark=''):
-    """EDICT 添加流转记录。"""
-    return _edict_request('POST', f'/api/tasks/by-legacy/{task_id}/flow', {
-        'from_dept': from_dept, 'to_dept': to_dept, 'remark': remark,
-    })
-
-def _edict_archive(task_id, archived=True):
-    """EDICT 归档/取消归档。"""
-    return _edict_request('PUT', f'/api/tasks/by-legacy/{task_id}/archive', {'archived': archived})
-
-def _edict_get_active_tasks():
-    """获取所有活跃任务（非终态、非归档）。"""
-    resp = _edict_request('GET', '/api/tasks/active')
-    if resp and isinstance(resp, dict):
-        return resp.get('tasks', [])
-    return None
-
-def _index_edict_tasks(payload):
-    """将 EDICT /api/tasks/live-status 响应归一化为 task_id -> task dict。"""
-    if not isinstance(payload, dict):
-        return {}
-
-    indexed = {}
-    for bucket in ('tasks', 'completed_tasks'):
-        data = payload.get(bucket, {})
-        if isinstance(data, dict):
-            for task_id, task in data.items():
-                if isinstance(task, dict):
-                    indexed[str(task.get('id') or task_id)] = task
-        elif isinstance(data, list):
-            for task in data:
-                if isinstance(task, dict) and task.get('id'):
-                    indexed[str(task['id'])] = task
-    return indexed
+# ── Scheduler（从 handlers/scheduler.py 导入）──
+from handlers.scheduler import (
+    ensure_scheduler as _ensure_scheduler,
+    scheduler_add_flow as _scheduler_add_flow,
+    scheduler_snapshot as _scheduler_snapshot,
+    scheduler_mark_progress as _scheduler_mark_progress,
+    update_task_scheduler as _update_task_scheduler,
+    get_scheduler_state,
+    handle_scheduler_retry as _handle_scheduler_retry_raw,
+    handle_scheduler_escalate as _handle_scheduler_escalate_raw,
+    handle_scheduler_rollback as _handle_scheduler_rollback_raw,
+    handle_scheduler_scan as _handle_scheduler_scan_raw,
+    _parse_iso,
+)
 
 def _output_meta(path):
     if not path or len(path) > 500 or '\n' in path:
@@ -1026,301 +986,19 @@ _ORG_AGENT_MAP = {
 
 _TERMINAL_STATES = {'Done', 'Cancelled'}
 
-
-def _parse_iso(ts):
-    if not ts or not isinstance(ts, str):
-        return None
-    try:
-        return datetime.datetime.fromisoformat(ts.replace('Z', '+00:00'))
-    except Exception:
-        return None
-
-
-def _ensure_scheduler(task):
-    sched = task.setdefault('_scheduler', {})
-    if not isinstance(sched, dict):
-        sched = {}
-        task['_scheduler'] = sched
-    sched.setdefault('enabled', True)
-    sched.setdefault('stallThresholdSec', 180)
-    sched.setdefault('maxRetry', 1)
-    sched.setdefault('retryCount', 0)
-    sched.setdefault('escalationLevel', 0)
-    sched.setdefault('autoRollback', True)
-    if not sched.get('lastProgressAt'):
-        sched['lastProgressAt'] = task.get('updatedAt') or now_iso()
-    if 'stallSince' not in sched:
-        sched['stallSince'] = None
-    if 'lastDispatchStatus' not in sched:
-        sched['lastDispatchStatus'] = 'idle'
-    if 'snapshot' not in sched:
-        sched['snapshot'] = {
-            'state': task.get('state', ''),
-            'org': task.get('org', ''),
-            'now': task.get('now', ''),
-            'savedAt': now_iso(),
-            'note': 'init',
-        }
-    return sched
-
-
-def _scheduler_add_flow(task, remark, to=''):
-    task.setdefault('flow_log', []).append({
-        'at': now_iso(),
-        'from': '太子调度',
-        'to': to or task.get('org', ''),
-        'remark': f'🧭 {remark}'
-    })
-
-
-def _scheduler_snapshot(task, note=''):
-    sched = _ensure_scheduler(task)
-    sched['snapshot'] = {
-        'state': task.get('state', ''),
-        'org': task.get('org', ''),
-        'now': task.get('now', ''),
-        'savedAt': now_iso(),
-        'note': note or 'snapshot',
-    }
-
-
-def _scheduler_mark_progress(task, note=''):
-    sched = _ensure_scheduler(task)
-    sched['lastProgressAt'] = now_iso()
-    sched['stallSince'] = None
-    sched['retryCount'] = 0
-    sched['escalationLevel'] = 0
-    sched['lastEscalatedAt'] = None
-    if note:
-        _scheduler_add_flow(task, f'进展确认：{note}')
-
-
-def _update_task_scheduler(task_id, updater):
-    task = _edict_get_task(task_id)
-    if not task:
-        return False
-    sched = task.get('_scheduler') or task.get('scheduler') or {}
-    _ensure_scheduler(task)
-    sched = task.get('_scheduler', sched)
-    updater(task, sched)
-    _edict_update_scheduler(task_id, sched)
-    return True
-
-
-def get_scheduler_state(task_id):
-    task = _edict_get_task(task_id)
-    if not task:
-        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-    sched = task.get('_scheduler') or task.get('scheduler') or {}
-    last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
-    now_dt = datetime.datetime.now(datetime.timezone.utc)
-    stalled_sec = 0
-    if last_progress:
-        stalled_sec = max(0, int((now_dt - last_progress).total_seconds()))
-    return {
-        'ok': True,
-        'taskId': task_id,
-        'state': task.get('state', ''),
-        'org': task.get('org', ''),
-        'scheduler': sched,
-        'stalledSec': stalled_sec,
-        'checkedAt': now_iso(),
-    }
-
-
+# Scheduler wrappers — delegate to handlers/scheduler.py, inject dispatch_for_state/wake_agent
 def handle_scheduler_retry(task_id, reason=''):
-    task = _edict_get_task(task_id)
-    if not task:
-        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-    state = task.get('state', '')
-    if state in _TERMINAL_STATES or state == 'Blocked':
-        return {'ok': False, 'error': f'任务 {task_id} 当前状态 {state} 不支持重试'}
-
-    sched = task.get('_scheduler') or task.get('scheduler') or {}
-    sched['retryCount'] = int(sched.get('retryCount') or 0) + 1
-    sched['lastRetryAt'] = now_iso()
-    sched['lastDispatchTrigger'] = 'taizi-retry'
-    _edict_add_flow(task_id, '太子调度', task.get('org', ''), f'触发重试第{sched["retryCount"]}次：{reason or "超时未推进"}')
-    _edict_update_scheduler(task_id, sched)
-
-    dispatch_for_state(task_id, task, state, trigger='taizi-retry')
-    return {'ok': True, 'message': f'{task_id} 已触发重试派发', 'retryCount': sched['retryCount']}
-
+    return _handle_scheduler_retry_raw(task_id, reason, dispatch_fn=dispatch_for_state)
 
 def handle_scheduler_escalate(task_id, reason=''):
-    task = _edict_get_task(task_id)
-    if not task:
-        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-    state = task.get('state', '')
-    if state in _TERMINAL_STATES:
-        return {'ok': False, 'error': f'任务 {task_id} 已结束，无需升级'}
-
-    sched = task.get('_scheduler') or task.get('scheduler') or {}
-    current_level = int(sched.get('escalationLevel') or 0)
-    next_level = min(current_level + 1, 2)
-    target = 'menxia' if next_level == 1 else 'shangshu'
-    target_label = '门下省' if next_level == 1 else '尚书省'
-
-    sched['escalationLevel'] = next_level
-    sched['lastEscalatedAt'] = now_iso()
-    _edict_add_flow(task_id, '太子调度', target_label, f'升级到{target_label}协调：{reason or "任务停滞"}')
-    _edict_update_scheduler(task_id, sched)
-
-    msg = (
-        f'🧭 太子调度升级通知\n'
-        f'任务ID: {task_id}\n'
-        f'当前状态: {state}\n'
-        f'停滞处理: 请你介入协调推进\n'
-        f'原因: {reason or "任务超过阈值未推进"}\n'
-        f'⚠️ 看板已有任务，请勿重复创建。'
-    )
-    wake_agent(target, msg)
-
-    return {'ok': True, 'message': f'{task_id} 已升级至{target_label}', 'escalationLevel': next_level}
-
+    return _handle_scheduler_escalate_raw(task_id, reason, wake_fn=wake_agent)
 
 def handle_scheduler_rollback(task_id, reason=''):
-    task = _edict_get_task(task_id)
-    if not task:
-        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
-    sched = task.get('_scheduler') or task.get('scheduler') or {}
-    snapshot = sched.get('snapshot') or {}
-    snap_state = snapshot.get('state')
-    if not snap_state:
-        return {'ok': False, 'error': f'任务 {task_id} 无可用回滚快照'}
-
-    old_state = task.get('state', '')
-    _edict_transition(task_id, snap_state, 'scheduler', f'回滚：{old_state} → {snap_state}')
-    sched['retryCount'] = 0
-    sched['escalationLevel'] = 0
-    sched['stallSince'] = None
-    sched['lastProgressAt'] = now_iso()
-    _edict_update_scheduler(task_id, sched)
-    _edict_add_flow(task_id, '太子调度', snapshot.get('org', ''), f'执行回滚：{old_state} → {snap_state}，原因：{reason or "停滞恢复"}')
-
-    if snap_state not in _TERMINAL_STATES:
-        dispatch_for_state(task_id, task, snap_state, trigger='taizi-rollback')
-
-    return {'ok': True, 'message': f'{task_id} 已回滚到 {snap_state}'}
-
+    return _handle_scheduler_rollback_raw(task_id, reason, dispatch_fn=dispatch_for_state)
 
 def handle_scheduler_scan(threshold_sec=180):
-    threshold_sec = max(30, int(threshold_sec or 180))
-    # 优先从 EDICT 获取活跃任务
-    edict_tasks = _edict_get_active_tasks()
-    if edict_tasks is not None:
-        tasks = edict_tasks
-    else:
-        tasks = []
-    now_dt = datetime.datetime.now(datetime.timezone.utc)
-    pending_retries = []
-    pending_escalates = []
-    pending_rollbacks = []
-    actions = []
-    changed = False
+    return _handle_scheduler_scan_raw(threshold_sec, dispatch_fn=dispatch_for_state, wake_fn=wake_agent)
 
-    for task in tasks:
-        task_id = task.get('id', '')
-        state = task.get('state', '')
-        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
-            continue
-        if state == 'Blocked':
-            continue
-
-        sched = _ensure_scheduler(task)
-        task_threshold = int(sched.get('stallThresholdSec') or threshold_sec)
-        last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
-        if not last_progress:
-            continue
-        stalled_sec = max(0, int((now_dt - last_progress).total_seconds()))
-        if stalled_sec < task_threshold:
-            continue
-
-        if not sched.get('stallSince'):
-            sched['stallSince'] = now_iso()
-            changed = True
-
-        retry_count = int(sched.get('retryCount') or 0)
-        max_retry = max(0, int(sched.get('maxRetry') or 1))
-        level = int(sched.get('escalationLevel') or 0)
-
-        if retry_count < max_retry:
-            sched['retryCount'] = retry_count + 1
-            sched['lastRetryAt'] = now_iso()
-            sched['lastDispatchTrigger'] = 'taizi-scan-retry'
-            _scheduler_add_flow(task, f'停滞{stalled_sec}秒，触发自动重试第{sched["retryCount"]}次')
-            pending_retries.append((task_id, state))
-            actions.append({'taskId': task_id, 'action': 'retry', 'stalledSec': stalled_sec})
-            changed = True
-            continue
-
-        if level < 2:
-            next_level = level + 1
-            target = 'menxia' if next_level == 1 else 'shangshu'
-            target_label = '门下省' if next_level == 1 else '尚书省'
-            sched['escalationLevel'] = next_level
-            sched['lastEscalatedAt'] = now_iso()
-            _scheduler_add_flow(task, f'停滞{stalled_sec}秒，升级至{target_label}协调', to=target_label)
-            pending_escalates.append((task_id, state, target, target_label, stalled_sec))
-            actions.append({'taskId': task_id, 'action': 'escalate', 'to': target_label, 'stalledSec': stalled_sec})
-            changed = True
-            continue
-
-        if sched.get('autoRollback', True):
-            snapshot = sched.get('snapshot') or {}
-            snap_state = snapshot.get('state')
-            if snap_state and snap_state != state:
-                old_state = state
-                task['state'] = snap_state
-                task['org'] = snapshot.get('org', task.get('org', ''))
-                task['now'] = '↩️ 太子调度自动回滚到稳定节点'
-                task['block'] = '无'
-                sched['retryCount'] = 0
-                sched['escalationLevel'] = 0
-                sched['stallSince'] = None
-                sched['lastProgressAt'] = now_iso()
-                _scheduler_add_flow(task, f'连续停滞，自动回滚：{old_state} → {snap_state}')
-                pending_rollbacks.append((task_id, snap_state))
-                actions.append({'taskId': task_id, 'action': 'rollback', 'toState': snap_state})
-                changed = True
-
-    if changed:
-        # 写回 EDICT scheduler
-        for task in tasks:
-            tid = task.get('id', '')
-            if tid and tid.startswith('JJC-'):
-                sched = task.get('_scheduler') or task.get('scheduler')
-                if sched:
-                    _edict_update_scheduler(tid, sched)
-
-    for task_id, state in pending_retries:
-        retry_task = next((t for t in tasks if t.get('id') == task_id), None)
-        if retry_task:
-            dispatch_for_state(task_id, retry_task, state, trigger='taizi-scan-retry')
-
-    for task_id, state, target, target_label, stalled_sec in pending_escalates:
-        msg = (
-            f'🧭 太子调度升级通知\n'
-            f'任务ID: {task_id}\n'
-            f'当前状态: {state}\n'
-            f'已停滞: {stalled_sec} 秒\n'
-            f'请立即介入协调推进\n'
-            f'⚠️ 看板已有任务，请勿重复创建。'
-        )
-        wake_agent(target, msg)
-
-    for task_id, state in pending_rollbacks:
-        rollback_task = next((t for t in tasks if t.get('id') == task_id), None)
-        if rollback_task and state not in _TERMINAL_STATES:
-            dispatch_for_state(task_id, rollback_task, state, trigger='taizi-auto-rollback')
-
-    return {
-        'ok': True,
-        'thresholdSec': threshold_sec,
-        'actions': actions,
-        'count': len(actions),
-        'checkedAt': now_iso(),
-    }
 
 
 def _startup_recover_queued_dispatches():
