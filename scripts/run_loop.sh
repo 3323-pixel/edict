@@ -65,8 +65,44 @@ safe_run() {
   fi
 }
 
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+OC_HOME="$HOME/.openclaw"
+
+# ── Workspace 自动同步 ──
+sync_workspaces() {
+  local changed=0
+  # 同步 SOUL.md
+  for agent_dir in "$REPO_DIR"/agents/*/; do
+    local agent=$(basename "$agent_dir")
+    local src="$agent_dir/SOUL.md"
+    local dst="$OC_HOME/workspace-$agent/SOUL.md"
+    if [[ -f "$src" ]] && [[ -d "$(dirname "$dst")" ]]; then
+      if ! cmp -s "$src" "$dst" 2>/dev/null; then
+        cp "$src" "$dst"
+        changed=1
+      fi
+    fi
+  done
+  # 同步 kanban_update.py + edict_client.py
+  for f in kanban_update.py edict_client.py; do
+    local src="$SCRIPT_DIR/$f"
+    [[ -f "$src" ]] || continue
+    for ws in "$OC_HOME"/workspace-*/scripts/; do
+      [[ -d "$ws" ]] || continue
+      if ! cmp -s "$src" "${ws}${f}" 2>/dev/null; then
+        cp "$src" "${ws}${f}"
+        changed=1
+      fi
+    done
+  done
+  if (( changed )); then
+    echo "$(date '+%H:%M:%S') [loop] ✅ Workspace 文件已同步" >> "$LOG"
+  fi
+}
+
 while true; do
   rotate_log
+  sync_workspaces
   safe_run "$SCRIPT_DIR/sync_from_openclaw_runtime.py"
   safe_run "$SCRIPT_DIR/sync_agent_config.py"
   safe_run "$SCRIPT_DIR/apply_model_changes.py"
