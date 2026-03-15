@@ -1367,7 +1367,7 @@ function openTask(id){
     ${t.output&&t.output!=='-'&&t.output!==''?`
     <div class="m-section">
       <div class="m-sec-label">产出物</div>
-      <code>${esc(t.output)}</code>
+      ${/^https?:\/\//.test(t.output) ? `<a href="${esc(t.output)}" target="_blank" rel="noreferrer">${esc(t.output)}</a>` : `<code>${esc(t.output)}</code>`}
     </div>`:''}
 
     <!-- 实时动态 / 执行回顾 -->
@@ -2101,7 +2101,7 @@ function openSessionDetail(jsonStr){
       }).join('')}
     </div>
 
-    ${t.output&&t.output!=='-'?`<div style="font-size:10px;color:var(--muted);margin-top:12px;word-break:break-all;border-top:1px solid var(--line);padding-top:8px">📂 ${esc(t.output)}</div>`:''}
+    ${t.output&&t.output!=='-'?`<div style="font-size:10px;color:var(--muted);margin-top:12px;word-break:break-all;border-top:1px solid var(--line);padding-top:8px">📂 ${/^https?:\/\//.test(t.output)?`<a href="${esc(t.output)}" target="_blank" rel="noreferrer">${esc(t.output)}</a>`:esc(t.output)}</div>`:''}
   `;
   document.getElementById('modal-bg').classList.add('open');
 }
@@ -2878,7 +2878,7 @@ function openMemorial(jsonStr){
 
     ${t.output&&t.output!=='-'?`<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
       <div style="font-size:11px;font-weight:600;margin-bottom:4px">📦 产出物</div>
-      <code style="font-size:11px;word-break:break-all">${esc(t.output)}</code>
+              ${/^https?:\/\//.test(t.output)?`<a href="${esc(t.output)}" target="_blank" rel="noreferrer" style="font-size:11px;word-break:break-all">${esc(t.output)}</a>`:`<code style="font-size:11px;word-break:break-all">${esc(t.output)}</code>`}
     </div>`:''}
 
     <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
