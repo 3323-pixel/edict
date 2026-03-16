@@ -35,3 +35,13 @@ data
 # Local dev environments
 .venv-edict/
 .openclaw/workspace-state.json
+
+# OpenClaw workspace files (copied to root by accident)
+/AGENTS.md
+/SOUL.md
+/IDENTITY.md
+/HEARTBEAT.md
+/TOOLS.md
+/USER.md
+/EDICT_REFACTOR_PLAN.md
+
