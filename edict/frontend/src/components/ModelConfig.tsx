@@ -163,34 +163,47 @@ export default function ModelConfig() {
           <div style={{ marginTop: 12, fontSize: 12 }}>
             <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
               <span style={{ padding: '4px 10px', borderRadius: 6, background: sysLogs.gateway?.alive ? 'rgba(76,175,80,.15)' : 'rgba(244,67,54,.15)', color: sysLogs.gateway?.alive ? 'var(--ok)' : 'var(--danger)' }}>
-                Gateway: {sysLogs.gateway?.alive ? '在线' : '离线'}
+                🌐 通信网关 {sysLogs.gateway?.alive ? '运行中' : '离线'}
               </span>
               <span style={{ padding: '4px 10px', borderRadius: 6, background: 'rgba(106,158,255,.1)', color: 'var(--acc)' }}>
-                Orchestrator: {sysLogs.workers?.orchestrator?.status || '?'}
+                🏛️ 调度中心 {sysLogs.workers?.orchestrator?.status === 'running' ? '运行中' : '异常'}
               </span>
               <span style={{ padding: '4px 10px', borderRadius: 6, background: 'rgba(106,158,255,.1)', color: 'var(--acc)' }}>
-                Dispatcher: {sysLogs.workers?.dispatcher?.status || '?'}
+                🚀 派发中心 {sysLogs.workers?.dispatcher?.status === 'running' ? '运行中' : '异常'}
               </span>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--line)', color: 'var(--muted)' }}>
-                  <th style={{ textAlign: 'left', padding: '4px 8px' }}>Topic</th>
-                  <th style={{ textAlign: 'right', padding: '4px 8px' }}>消息数</th>
-                  <th style={{ textAlign: 'right', padding: '4px 8px' }}>积压</th>
-                  <th style={{ textAlign: 'left', padding: '4px 8px' }}>消费者</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px' }}>事件类型</th>
+                  <th style={{ textAlign: 'right', padding: '4px 8px' }}>累计处理</th>
+                  <th style={{ textAlign: 'right', padding: '4px 8px' }}>排队中</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px' }}>处理方</th>
                   <th style={{ textAlign: 'center', padding: '4px 8px' }}>操作</th>
                 </tr>
               </thead>
               <tbody>
-                {(sysLogs.streams || []).map((s: StreamInfo) => (
+                {(sysLogs.streams || []).map((s: StreamInfo) => {
+                  const TOPIC_LABELS: Record<string, string> = {
+                    'task.created': '📜 旨意下达',
+                    'task.status': '🔄 状态流转',
+                    'task.dispatch': '🚀 Agent 派发',
+                    'task.completed': '✅ 任务完成',
+                    'task.stalled': '⚠️ 停滞检测',
+                    'agent.heartbeat': '💓 Agent 心跳',
+                  };
+                  const GROUP_LABELS: Record<string, string> = {
+                    'orchestrator': '调度中心',
+                    'dispatcher': '派发中心',
+                  };
+                  return (
                   <tr key={s.topic} style={{ borderBottom: '1px solid var(--line)' }}>
-                    <td style={{ padding: '4px 8px', fontFamily: 'monospace' }}>{s.topic}</td>
+                    <td style={{ padding: '4px 8px' }}>{TOPIC_LABELS[s.topic] || s.topic}</td>
                     <td style={{ padding: '4px 8px', textAlign: 'right' }}>{s.length}</td>
                     <td style={{ padding: '4px 8px', textAlign: 'right', color: s.pending > 0 ? 'var(--danger)' : 'var(--ok)', fontWeight: s.pending > 0 ? 700 : 400 }}>
                       {s.pending}
                     </td>
-                    <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontSize: 10 }}>{s.consumerGroup}</td>
+                    <td style={{ padding: '4px 8px', fontSize: 10 }}>{GROUP_LABELS[s.consumerGroup] || s.consumerGroup}</td>
                     <td style={{ padding: '4px 8px', textAlign: 'center' }}>
                       {s.pending > 0 && (
                         <button
@@ -207,7 +220,8 @@ export default function ModelConfig() {
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
