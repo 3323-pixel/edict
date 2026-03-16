@@ -449,13 +449,19 @@ export default function TaskModal() {
             <div className="m-section">
               <div className="m-sec-label">产出物</div>
               {/^https?:\/\//.test(task.output) ? (
-                <a href={task.output} target="_blank" rel="noreferrer">{task.output}</a>
+                <a href={task.output} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)', fontSize: 12 }}>{task.output}</a>
+              ) : task.output.length > 200 ? (
+                <div style={{
+                  background: 'var(--panel2)', border: '1px solid var(--line)',
+                  borderRadius: 8, padding: 12, fontSize: 12, lineHeight: 1.8,
+                  maxHeight: 500, overflowY: 'auto',
+                }} dangerouslySetInnerHTML={{ __html: simpleMarkdown(task.output) }} />
               ) : (
-                <code>{task.output}</code>
+                <code style={{ fontSize: 11, wordBreak: 'break-all' }}>{task.output}</code>
               )}
             </div>
           )}
-          <OutputViewer taskId={task.id} />
+          {(!task.output || task.output.length < 200) && <OutputViewer taskId={task.id} />}
 
           {/* Live Activity */}
           <LiveActivitySection data={activityData} isDone={['Done', 'Cancelled'].includes(task.state)} logRef={logRef} />
