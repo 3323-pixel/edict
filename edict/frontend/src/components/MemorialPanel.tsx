@@ -186,7 +186,11 @@ function MemorialDetailModal({
           {t.output && t.output !== '-' && (
             <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
               <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>📦 产出物</div>
-              <code style={{ fontSize: 11, wordBreak: 'break-all' }}>{t.output}</code>
+              {/^https?:\/\//.test(t.output) ? (
+                <a href={t.output} target="_blank" rel="noreferrer" style={{ fontSize: 11, wordBreak: 'break-all' }}>{t.output}</a>
+              ) : (
+                <code style={{ fontSize: 11, wordBreak: 'break-all' }}>{t.output}</code>
+              )}
             </div>
           )}
 
