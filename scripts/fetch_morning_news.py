@@ -6,8 +6,14 @@
 """
 import json, pathlib, datetime, subprocess, re, sys, os, logging
 from xml.etree import ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from file_lock import atomic_json_write
 from utils import validate_url
+
+try:
+    from defusedxml import ElementTree as DET
+except ImportError:
+    DET = None  # fallback to regex sanitization
 
 log = logging.getLogger('朝报')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
@@ -17,30 +23,34 @@ DATA = pathlib.Path(__file__).resolve().parent.parent / 'data'
 # ── RSS 源配置 ──────────────────────────────────────────────────────────
 FEEDS = {
     '政治': [
-        ('BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'),
-        ('Reuters World', 'https://feeds.reuters.com/reuters/worldNews'),
-        ('AP Top News', 'https://rsshub.app/apnews/topics/ap-top-news'),
+        ('FT中文网', 'https://www.ftchinese.com/rss/news'),
+        ('虎嗅', 'https://www.huxiu.com/rss/0.xml'),
+        ('36氪', 'https://36kr.com/feed'),
     ],
     '军事': [
-        ('Defense News', 'https://www.defensenews.com/rss/'),
-        ('BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'),
-        ('Reuters', 'https://feeds.reuters.com/reuters/worldNews'),
+        ('FT中文网', 'https://www.ftchinese.com/rss/news'),
+        ('虎嗅', 'https://www.huxiu.com/rss/0.xml'),
+        ('Solidot', 'https://www.solidot.org/index.rss'),
     ],
     '经济': [
-        ('Reuters Business', 'https://feeds.reuters.com/reuters/businessNews'),
-        ('BBC Business', 'https://feeds.bbci.co.uk/news/business/rss.xml'),
-        ('CNBC', 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114'),
+        ('FT中文网', 'https://www.ftchinese.com/rss/news'),
+        ('36氪', 'https://36kr.com/feed'),
+        ('虎嗅', 'https://www.huxiu.com/rss/0.xml'),
     ],
     'AI大模型': [
-        ('Hacker News', 'https://hnrss.org/newest?q=AI+LLM+model&points=50'),
-        ('VentureBeat AI', 'https://venturebeat.com/category/ai/feed/'),
-        ('MIT Tech Review', 'https://www.technologyreview.com/feed/'),
+        ('量子位', 'https://www.qbitai.com/feed'),
+        ('爱范儿', 'https://www.ifanr.com/feed'),
+        ('Solidot', 'https://www.solidot.org/index.rss'),
     ],
 }
 
 CATEGORY_KEYWORDS = {
+    '政治': ['政治', '外交', '政府', '国务院', '国会', '总统', '总理', '议会', '联合国',
+            '美国', '中国', '欧盟', '俄罗斯', '乌克兰', '伊朗', '以色列', '政策', '制裁'],
     '军事': ['war', 'military', 'troops', 'attack', 'missile', 'army', 'navy', 'weapons',
               '战', '军', '导弹', '士兵', 'ukraine', 'russia', 'china sea', 'nato'],
+    '经济': ['经济', '市场', '股市', '基金', '融资', '投资', '银行', '央行', '利率',
+            '通胀', '就业', '企业', '财报', '并购', '美元', '油价', '财政', '税'],
     'AI大模型': ['ai', 'llm', 'gpt', 'claude', 'gemini', 'openai', 'anthropic', 'deepseek',
                 'machine learning', 'neural', 'model', '大模型', '人工智能', 'chatgpt'],
 }
@@ -55,20 +65,27 @@ def curl_rss(url, timeout=10):
             capture_output=True, timeout=timeout+2
         )
         return r.stdout.decode('utf-8', errors='ignore')
-    except Exception:
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
+        log.debug(f'RSS 采集失败 {url}: {e}')
+        return ''
+    except OSError as e:
+        log.warning(f'RSS 采集系统错误 {url}: {e}')
         return ''
 
 def _safe_parse_xml(xml_text, max_size=5*1024*1024):
-    """安全解析 XML：限制大小，禁用外部实体（防 XXE）。"""
+    """安全解析 XML：限制大小，使用 defusedxml 防 XXE。"""
     if len(xml_text) > max_size:
         log.warning(f'XML 内容过大 ({len(xml_text)} bytes)，跳过')
         return None
-    # 剥离 DOCTYPE / ENTITY 声明以防 XXE
-    cleaned = re.sub(r'<!DOCTYPE[^>]*>', '', xml_text, flags=re.IGNORECASE)
-    cleaned = re.sub(r'<!ENTITY[^>]*>', '', cleaned, flags=re.IGNORECASE)
     try:
+        if DET is not None:
+            return DET.fromstring(xml_text)
+        # fallback: 正则剥离 + 标准库（defusedxml 未安装时）
+        cleaned = re.sub(r'<!DOCTYPE[^>]*>', '', xml_text, flags=re.IGNORECASE)
+        cleaned = re.sub(r'<!ENTITY[^>]*>', '', cleaned, flags=re.IGNORECASE)
         return ET.fromstring(cleaned)
-    except ET.ParseError:
+    except ET.ParseError as e:
+        log.debug(f'XML 解析失败: {e}')
         return None
 
 
@@ -99,8 +116,8 @@ def parse_rss(xml_text):
                 img = media.get('url', img)
             items.append({'title': title, 'desc': desc, 'link': link,
                           'pub_date': pub, 'image': img})
-    except Exception:
-        pass
+    except (ET.ParseError, AttributeError, TypeError) as e:
+        log.debug(f'RSS 解析错误: {e}')
     return items
 
 def match_category(item, category):
@@ -111,34 +128,43 @@ def match_category(item, category):
     text = (item['title'] + ' ' + item['desc']).lower()
     return any(k in text for k in kws)
 
+def _fetch_single_feed(args):
+    """单个 RSS 源采集（供并发调用）。"""
+    category, source_name, url = args
+    xml = curl_rss(url)
+    if not xml:
+        return []
+    items = parse_rss(xml)
+    valid = []
+    for item in items:
+        if not item['title']:
+            continue
+        if category in CATEGORY_KEYWORDS and not match_category(item, category):
+            continue
+        valid.append({
+            'title': item['title'],
+            'summary': item['desc'] or item['title'],
+            'link': item['link'],
+            'pub_date': item['pub_date'],
+            'image': item['image'],
+            'source': source_name,
+        })
+    return valid
+
 def fetch_category(category, feeds, max_items=5):
-    """抓取一个分类的新闻"""
+    """并发抓取一个分类的新闻。"""
     seen_urls = set()
     results = []
-    for source_name, url in feeds:
-        if len(results) >= max_items:
-            break
-        xml = curl_rss(url)
-        if not xml:
-            continue
-        items = parse_rss(xml)
-        for item in items:
-            if not item['title']:
-                continue
-            if item['link'] in seen_urls:
-                continue
-            # 军事和AI分类需要关键词过滤
-            if category in CATEGORY_KEYWORDS and not match_category(item, category):
-                continue
-            seen_urls.add(item['link'])
-            results.append({
-                'title': item['title'],
-                'summary': item['desc'] or item['title'],
-                'link': item['link'],
-                'pub_date': item['pub_date'],
-                'image': item['image'],
-                'source': source_name,
-            })
+    tasks = [(category, name, url) for name, url in feeds]
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        for feed_items in pool.map(_fetch_single_feed, tasks):
+            for item in feed_items:
+                if item['link'] in seen_urls:
+                    continue
+                seen_urls.add(item['link'])
+                results.append(item)
+                if len(results) >= max_items:
+                    break
             if len(results) >= max_items:
                 break
     return results
@@ -164,8 +190,8 @@ def main():
     config = {}
     try:
         config = json.loads(config_file.read_text())
-    except Exception:
-        pass
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        log.info(f'配置文件加载失败，使用默认配置: {e}')
 
     # 已启用的分类
     enabled_cats = set()

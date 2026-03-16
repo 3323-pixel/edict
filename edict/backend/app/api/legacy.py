@@ -5,8 +5,12 @@ Edict 使用 UUID。此路由通过 tags 或 meta.legacy_id 映射。
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+import uuid
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from pydantic import BaseModel, Field
+from .utils import MenxiaRejectIn, MenxiaResubmitIn, MenxiaRollbackIn, error_response as _err
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -235,3 +239,220 @@ async def legacy_get(
     if not task:
         raise HTTPException(status_code=404, detail=f"Legacy task not found: {legacy_id}")
     return task.to_dict()
+
+
+# ── Menxia actions (by-legacy) ──
+
+@router.post("/by-legacy/{legacy_id}/menxia/reject")
+async def legacy_menxia_reject(
+    legacy_id: str,
+    body: MenxiaRejectIn,
+    x_actor: str | None = Header(default=None, alias="X-Actor"),
+    x_role: str | None = Header(default=None, alias="X-Role"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _find_by_legacy_id(db, legacy_id)
+    if not task:
+        return _err(status_code=404, code="NOT_FOUND", message=f"Legacy task not found: {legacy_id}")
+
+    req_id = body.client_request_id or idempotency_key or str(uuid.uuid4())
+    status_before = task.state.value if task.state else ""
+
+    if task.state in {TaskState.Done, TaskState.Cancelled} or task.archived:
+        return _err(status_code=409, code="TERMINAL_STATE", message="Task is terminal/archived; action not allowed", request_id=req_id, status_before=status_before, allowed_transitions=[])
+
+    if status_before != TaskState.Menxia.value:
+        return _err(status_code=409, code="INVALID_STATE", message="REJECT only allowed when status==Menxia", request_id=req_id, status_before=status_before)
+
+    if (x_role or "").lower() != "menxia":
+        return _err(status_code=403, code="MISSING_ROLES", message="Missing role: Menxia", request_id=req_id, status_before=status_before, missing_roles=["Menxia"])
+
+    if not x_actor:
+        return _err(status_code=403, code="MISSING_ACTOR", message="Missing actor header: X-Actor", request_id=req_id, status_before=status_before)
+
+    if task.official and task.official != x_actor:
+        return _err(status_code=403, code="NOT_REVIEW_ASSIGNEE", message="Only current review assignee can reject", request_id=req_id, status_before=status_before)
+
+    mx = task.scheduler.get("menxia") if isinstance(task.scheduler, dict) else None
+    if not isinstance(mx, dict):
+        mx = {"review_round": 0, "reviews": [], "audit": [], "idem": {}}
+        task.scheduler = {**(task.scheduler or {}), "menxia": mx}
+
+    if req_id in (mx.get("idem") or {}):
+        return mx["idem"][req_id]
+
+    if mx.get("forced_approved_round3") is True:
+        return _err(status_code=409, code="ROUND3_FORCED_APPROVAL", message="Round3 forced approval; reject is no longer allowed", request_id=req_id, status_before=status_before)
+
+    mx["review_round"] = int(mx.get("review_round") or 0) + 1
+    round_no = mx["review_round"]
+    created_at = datetime.utcnow().isoformat() + "Z"
+
+    mx["reviews"] = [
+        *(mx.get("reviews") or []),
+        {
+            "task_id": str(task.id),
+            "legacy_id": legacy_id,
+            "round": round_no,
+            "decision": "Rejected",
+            "reason": body.reason,
+            "opinion": body.opinion,
+            "actor": x_actor,
+            "role": "Menxia",
+            "created_at": created_at,
+            "request_id": req_id,
+        },
+    ]
+    mx["audit"] = [
+        *(mx.get("audit") or []),
+        {
+            "action": "reject",
+            "actor": x_actor,
+            "role": "Menxia",
+            "round": round_no,
+            "request_id": req_id,
+            "created_at": created_at,
+        },
+    ]
+
+    bus = await get_event_bus()
+    svc = TaskService(db, bus)
+    try:
+        await svc.transition_state_legacy(legacy_id, TaskState.Zhongshu, agent="menxia", reason=body.reason)
+    except Exception as e:
+        return _err(status_code=409, code="TRANSITION_FAILED", message=str(e), request_id=req_id, status_before=status_before)
+
+    resp = {
+        "task_id": str(task.id),
+        "legacy_id": legacy_id,
+        "status_before": status_before,
+        "status_after": TaskState.Zhongshu.value,
+        "review_round": mx["review_round"],
+        "requestId": req_id,
+    }
+    mx.setdefault("idem", {})[req_id] = resp
+    await db.commit()
+    return resp
+
+
+@router.post("/by-legacy/{legacy_id}/menxia/resubmit")
+async def legacy_menxia_resubmit(
+    legacy_id: str,
+    body: MenxiaResubmitIn,
+    x_actor: str | None = Header(default=None, alias="X-Actor"),
+    x_role: str | None = Header(default=None, alias="X-Role"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _find_by_legacy_id(db, legacy_id)
+    if not task:
+        return _err(status_code=404, code="NOT_FOUND", message=f"Legacy task not found: {legacy_id}")
+
+    req_id = body.client_request_id or idempotency_key or str(uuid.uuid4())
+    status_before = task.state.value if task.state else ""
+
+    if status_before != TaskState.Zhongshu.value:
+        return _err(status_code=409, code="INVALID_STATE", message="RESUBMIT only allowed when status==Zhongshu", request_id=req_id, status_before=status_before)
+
+    if (x_role or "").lower() != "zhongshu":
+        return _err(status_code=403, code="MISSING_ROLES", message="Missing role: Zhongshu", request_id=req_id, status_before=status_before, missing_roles=["Zhongshu"])
+
+    mx = task.scheduler.get("menxia") if isinstance(task.scheduler, dict) else None
+    if not isinstance(mx, dict):
+        mx = {"review_round": 0, "reviews": [], "audit": [], "idem": {}}
+        task.scheduler = {**(task.scheduler or {}), "menxia": mx}
+
+    if req_id in (mx.get("idem") or {}):
+        return mx["idem"][req_id]
+
+    bus = await get_event_bus()
+    svc = TaskService(db, bus)
+
+    if int(mx.get("review_round") or 0) == 3:
+        mx["forced_approved_round3"] = True
+        created_at = datetime.utcnow().isoformat() + "Z"
+        mx["audit"] = [
+            *(mx.get("audit") or []),
+            {"action": "auto_approve_round3", "actor": "system", "role": "system", "round": 3, "request_id": req_id, "created_at": created_at},
+        ]
+        mx["reviews"] = [
+            *(mx.get("reviews") or []),
+            {"task_id": str(task.id), "legacy_id": legacy_id, "round": 3, "decision": "Approved", "reason": "auto_approve_round3", "opinion": body.summary_of_changes, "actor": "system", "role": "system", "created_at": created_at, "request_id": req_id},
+        ]
+        await svc.transition_state_legacy(legacy_id, TaskState.Assigned, agent="system", reason="auto_approve_round3")
+        resp = {"task_id": str(task.id), "legacy_id": legacy_id, "status_before": status_before, "status_after": TaskState.Assigned.value, "action": "auto_approve_round3", "review_round": mx["review_round"], "requestId": req_id}
+        mx.setdefault("idem", {})[req_id] = resp
+        await db.commit()
+        return resp
+
+    await svc.transition_state_legacy(legacy_id, TaskState.Menxia, agent="zhongshu", reason=body.summary_of_changes or "resubmit")
+    mx["audit"] = [
+        *(mx.get("audit") or []),
+        {"action": "resubmit", "actor": x_actor or "unknown", "role": "Zhongshu", "round": int(mx.get("review_round") or 0), "request_id": req_id, "created_at": datetime.utcnow().isoformat() + "Z"},
+    ]
+    resp = {"task_id": str(task.id), "legacy_id": legacy_id, "status_before": status_before, "status_after": TaskState.Menxia.value, "review_round": mx["review_round"], "requestId": req_id}
+    mx.setdefault("idem", {})[req_id] = resp
+    await db.commit()
+    return resp
+
+
+@router.post("/by-legacy/{legacy_id}/menxia/rollback")
+async def legacy_menxia_rollback(
+    legacy_id: str,
+    body: MenxiaRollbackIn,
+    x_role: str | None = Header(default=None, alias="X-Role"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _find_by_legacy_id(db, legacy_id)
+    if not task:
+        return _err(status_code=404, code="NOT_FOUND", message=f"Legacy task not found: {legacy_id}")
+
+    req_id = body.client_request_id or idempotency_key or str(uuid.uuid4())
+    status_before = task.state.value if task.state else ""
+
+    if status_before != TaskState.Menxia.value:
+        return _err(status_code=409, code="INVALID_STATE", message="ROLLBACK only allowed when status==Menxia", request_id=req_id, status_before=status_before)
+
+    if (x_role or "").lower() != "menxia":
+        return _err(status_code=403, code="MISSING_ROLES", message="Missing role: Menxia", request_id=req_id, status_before=status_before, missing_roles=["Menxia"])
+
+    bus = await get_event_bus()
+    svc = TaskService(db, bus)
+    await svc.transition_state_legacy(legacy_id, TaskState.Zhongshu, agent="menxia", reason=body.reason or "rollback")
+    return {"task_id": str(task.id), "legacy_id": legacy_id, "status_before": status_before, "status_after": TaskState.Zhongshu.value, "requestId": req_id}
+
+
+@router.get("/by-legacy/{legacy_id}/menxia/reviews")
+async def legacy_menxia_reviews(
+    legacy_id: str,
+    round: int | None = Query(default=None),
+    actor: str | None = Query(default=None),
+    decision: str | None = Query(default=None),
+    timeRange: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    task = await _find_by_legacy_id(db, legacy_id)
+    if not task:
+        return _err(status_code=404, code="NOT_FOUND", message=f"Legacy task not found: {legacy_id}")
+
+    mx = task.scheduler.get("menxia") if isinstance(task.scheduler, dict) else {}
+    reviews = list((mx or {}).get("reviews") or [])
+
+    if round is not None:
+        reviews = [r for r in reviews if int(r.get("round") or 0) == int(round)]
+    if actor:
+        reviews = [r for r in reviews if (r.get("actor") or "") == actor]
+    if decision:
+        reviews = [r for r in reviews if (r.get("decision") or "").lower() == decision.lower()]
+    if timeRange and "," in timeRange:
+        start, end = timeRange.split(",", 1)
+        start = start.strip()
+        end = end.strip()
+        if start:
+            reviews = [r for r in reviews if (r.get("created_at") or "") >= start]
+        if end:
+            reviews = [r for r in reviews if (r.get("created_at") or "") <= end]
+
+    return {"task_id": str(task.id), "legacy_id": legacy_id, "review_round": int((mx or {}).get("review_round") or 0), "reviews": reviews}
