@@ -432,26 +432,55 @@ build_frontend
 first_sync
 restart_gateway
 
+# ── Step 8: 启动所有服务 ──────────────────────────────────────
+start_services() {
+  info "启动所有服务..."
+
+  # EDICT Backend
+  if [ -f "$REPO_DIR/.venv-edict/bin/python3" ]; then
+    cd "$REPO_DIR/edict/backend"
+    nohup "$REPO_DIR/.venv-edict/bin/python3" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > /tmp/edict-backend.log 2>&1 &
+    cd "$REPO_DIR"
+    sleep 3
+    if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+      log "EDICT 后端已启动 (端口 8000)"
+    else
+      warn "EDICT 后端启动可能失败，请检查: tail /tmp/edict-backend.log"
+    fi
+  else
+    warn "未找到 .venv-edict，跳过 EDICT 后端启动"
+  fi
+
+  # Dashboard
+  nohup python3 "$REPO_DIR/dashboard/server.py" > /tmp/dashboard-server.log 2>&1 &
+  sleep 2
+  if curl -sf http://localhost:7891/healthz > /dev/null 2>&1; then
+    log "看板服务器已启动 (端口 7891)"
+  else
+    warn "看板服务器启动可能失败，请检查: tail /tmp/dashboard-server.log"
+  fi
+
+  # run_loop.sh
+  nohup bash "$REPO_DIR/scripts/run_loop.sh" > /tmp/run_loop.log 2>&1 &
+  log "数据刷新循环已启动"
+}
+
+start_services
+
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  🎉  三省六部安装完成！                          ║${NC}"
+echo -e "${GREEN}║  🎉  三省六部安装完成！所有服务已启动             ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
-echo "下一步："
-echo "  1. 启动 EDICT 后端（需要 PostgreSQL + Redis）："
-echo "     cd edict/backend"
-echo "     pip install -r requirements.txt"
-echo "     python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &"
+echo "服务状态："
+echo "  🏛️  EDICT 后端:    http://127.0.0.1:8000 (含 Orchestrator + Dispatcher)"
+echo "  📊 看板:          http://127.0.0.1:7891"
+echo "  🔄 数据刷新循环:  后台运行中"
+echo "  🦞 OpenClaw 网关: 后台运行中"
 echo ""
-echo "  2. 启动看板服务器:"
-echo "     python3 dashboard/server.py &"
+echo "管理命令："
+echo "  查看日志:   tail -f /tmp/edict-backend.log"
+echo "  重启后端:   kill \$(pgrep -f 'uvicorn app.main') && cd edict/backend && .venv-edict/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &"
+echo "  重启看板:   kill \$(pgrep -f 'dashboard/server.py') && python3 dashboard/server.py &"
 echo ""
-echo "  3. 启动数据刷新循环:"
-echo "     bash scripts/run_loop.sh &"
-echo ""
-echo "  4. 打开看板:  http://127.0.0.1:7891"
-echo ""
-echo "  ⚠️  EDICT 后端包含事件驱动派发（Orchestrator + Dispatcher），"
-echo "     如果不启动，任务状态变更后 Agent 不会自动接力。"
-echo ""
-info "文档: docs/ROADMAP.md"
+info "文档: docs/getting-started.md"
