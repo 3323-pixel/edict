@@ -1052,6 +1052,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(get_scheduler_state(task_id))
         elif p == '/api/agents-status':
             self.send_json(get_agents_status())
+        elif p == '/api/system-logs':
+            edict_streams = _edict_request('GET', '/api/admin/system/streams') or {}
+            gateway_status = get_agents_status()
+            self.send_json({
+                'streams': edict_streams.get('streams', []),
+                'gateway': {
+                    'alive': gateway_status.get('gateway', {}).get('alive', False),
+                    'status': gateway_status.get('gateway', {}).get('status', 'unknown'),
+                },
+                'workers': {
+                    'orchestrator': {'status': 'running' if edict_streams.get('streams') else 'unknown'},
+                    'dispatcher': {'status': 'running' if edict_streams.get('streams') else 'unknown'},
+                },
+            })
         elif p.startswith('/api/agent-activity/'):
             agent_id = p.replace('/api/agent-activity/', '')
             if not agent_id or not _SAFE_NAME_RE.match(agent_id):
@@ -1106,6 +1120,26 @@ class Handler(BaseHTTPRequestHandler):
             cfg_path = DATA / 'morning_brief_config.json'
             cfg_path.write_text(json.dumps(body, ensure_ascii=False, indent=2))
             self.send_json({'ok': True, 'message': '订阅配置已保存'})
+            return
+
+        if p == '/api/system-logs/flush':
+            topic = body.get('topic', '')
+            group = body.get('group', '')
+            if not topic or not group:
+                self.send_json({'ok': False, 'error': 'topic and group required'}, 400)
+                return
+            result = _edict_request('POST', f'/api/admin/system/flush-pending?topic={topic}&group={group}')
+            self.send_json(result or {'ok': False, 'error': 'EDICT backend unreachable'})
+            return
+
+        if p == '/api/system-logs/flush':
+            topic = body.get('topic', '')
+            group = body.get('group', '')
+            if not topic or not group:
+                self.send_json({'ok': False, 'error': 'topic and group required'}, 400)
+                return
+            result = _edict_request('POST', f'/api/admin/system/flush-pending?topic={topic}&group={group}')
+            self.send_json(result or {'ok': False, 'error': 'EDICT unavailable'})
             return
 
         if p == '/api/scheduler-scan':

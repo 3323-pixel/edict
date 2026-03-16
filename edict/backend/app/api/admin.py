@@ -88,3 +88,19 @@ async def get_config():
         "redis": settings.redis_url.split("@")[-1] if "@" in settings.redis_url else settings.redis_url,
         "scheduler_scan_interval": settings.scheduler_scan_interval_seconds,
     }
+
+
+@router.get("/system/streams")
+async def system_streams():
+    """Redis Streams 状态（用于系统监控面板）。"""
+    bus = await get_event_bus()
+    streams = await bus.all_streams_info()
+    return {"streams": streams}
+
+
+@router.post("/system/flush-pending")
+async def flush_pending(topic: str, group: str):
+    """清除指定 stream 的 pending 事件积压。"""
+    bus = await get_event_bus()
+    count = await bus.flush_pending(topic, group)
+    return {"ok": True, "flushed": count, "topic": topic, "group": group}

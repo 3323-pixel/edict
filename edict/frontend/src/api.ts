@@ -94,6 +94,10 @@ export const api = {
 
   createTask: (data: CreateTaskPayload) =>
     postJ<ActionResult & { taskId?: string }>(`${API_BASE}/api/create-task`, data),
+  systemLogs: () =>
+    fetchJ<SystemLogsData>(`${API_BASE}/api/system-logs`),
+  flushPending: (topic: string, group: string) =>
+    postJ<ActionResult & { flushed?: number }>(`${API_BASE}/api/system-logs/flush`, { topic, group }),
 };
 
 // ── Types ──
@@ -396,4 +400,20 @@ export interface RemoteSkillsListResult {
   count?: number;
   listedAt?: string;
   error?: string;
+}
+
+export interface StreamInfo {
+  topic: string;
+  length: number;
+  pending: number;
+  consumerGroup: string;
+}
+
+export interface SystemLogsData {
+  streams: StreamInfo[];
+  gateway: { alive: boolean; status: string };
+  workers: {
+    orchestrator: { status: string };
+    dispatcher: { status: string };
+  };
 }

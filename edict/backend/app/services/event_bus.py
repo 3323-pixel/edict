@@ -201,6 +201,52 @@ class EventBus:
         except aioredis.ResponseError:
             return {}
 
+    async def all_streams_info(self) -> list[dict]:
+        """获取所有已知 topic 的 stream 状态（用于系统监控面板）。"""
+        ALL_TOPICS = [
+            TOPIC_TASK_CREATED, TOPIC_TASK_STATUS, TOPIC_TASK_DISPATCH,
+            TOPIC_TASK_COMPLETED, TOPIC_TASK_STALLED, TOPIC_AGENT_HEARTBEAT,
+        ]
+        GROUP_MAP = {
+            TOPIC_TASK_CREATED: "orchestrator",
+            TOPIC_TASK_STATUS: "orchestrator",
+            TOPIC_TASK_DISPATCH: "dispatcher",
+            TOPIC_TASK_COMPLETED: "orchestrator",
+            TOPIC_TASK_STALLED: "orchestrator",
+            TOPIC_AGENT_HEARTBEAT: "orchestrator",
+        }
+        results = []
+        for topic in ALL_TOPICS:
+            stream_key = self._stream_key(topic)
+            entry = {"topic": topic, "length": 0, "pending": 0, "consumerGroup": GROUP_MAP.get(topic, "")}
+            try:
+                info = await self._redis.xinfo_stream(stream_key)
+                entry["length"] = info.get("length", 0)
+            except Exception:
+                pass
+            group = GROUP_MAP.get(topic)
+            if group:
+                try:
+                    pending = await self._redis.xpending(stream_key, group)
+                    entry["pending"] = pending.get("pending", 0) if isinstance(pending, dict) else 0
+                except Exception:
+                    pass
+            results.append(entry)
+        return results
+
+    async def flush_pending(self, topic: str, group: str) -> int:
+        """ACK 所有 pending 事件（清除积压）。"""
+        stream_key = self._stream_key(topic)
+        try:
+            pending = await self._redis.xpending_range(stream_key, group, "-", "+", 500)
+            if pending:
+                ids = [p["message_id"] for p in pending]
+                await self._redis.xack(stream_key, group, *ids)
+                return len(ids)
+        except Exception:
+            pass
+        return 0
+
 
 # ── 全局单例 ──
 _bus: EventBus | None = None
