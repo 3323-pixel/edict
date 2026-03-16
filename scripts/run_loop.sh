@@ -117,5 +117,12 @@ while true; do
       -H 'Content-Type: application/json' -d '{"thresholdSec":180}' >> "$LOG" 2>&1 || true
   fi
 
+  # 每小时清理 agent session 历史，防止上下文无限增长浪费 token
+  SESSION_CLEANUP_COUNTER=$((${SESSION_CLEANUP_COUNTER:-0} + INTERVAL))
+  if (( SESSION_CLEANUP_COUNTER >= 3600 )); then
+    SESSION_CLEANUP_COUNTER=0
+    openclaw sessions cleanup --all-agents --enforce >> "$LOG" 2>&1 || true
+  fi
+
   sleep "$INTERVAL"
 done

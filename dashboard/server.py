@@ -832,8 +832,10 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
                     'lastDispatchTrigger': trigger,
                 }))
                 return
-            cmd = ['openclaw', 'agent', '--agent', agent_id, '-m', msg,
-                   '--deliver', '--channel', 'feishu', '--timeout', '300']
+            # 每个任务用独立 session，避免历史上下文无限增长浪费 token
+            session_id = f'edict-{task_id}'
+            cmd = ['openclaw', 'agent', '--agent', agent_id, '--session-id', session_id,
+                   '-m', msg, '--deliver', '--channel', 'feishu', '--timeout', '300']
             max_retries = 2
             err = ''
             for attempt in range(1, max_retries + 1):

@@ -150,9 +150,12 @@ class DispatchWorker:
     ) -> dict:
         """异步调用 OpenClaw CLI — 在线程池中执行。"""
         settings = get_settings()
+        # 每个任务用独立 session，避免历史上下文无限增长浪费 token
+        session_id = f"edict-{task_id}-{trace_id[:8]}"
         cmd = [
             "openclaw", "agent",
             "--agent", agent,
+            "--session-id", session_id,
             "-m", message,
         ]
 
