@@ -78,6 +78,17 @@ python3 scripts/kanban_update.py todo <id> <todo_id> "<title>" <status> --detail
 python3 scripts/kanban_update.py todo JJC-xxx 1 "[子任务名]" completed --detail "产出概要：\n- 要点1\n- 要点2\n验证结果：通过"
 ```
 
+
+## 📄 产出物归档（重要！）
+
+当任务产出包含报告、方案、分析文档等**超过 5 行的正式产出**时：
+
+1. **先读取 `skills/feishu-create-doc/SKILL.md`** 获取飞书文档创建指南
+2. **用飞书文档创建工具**把报告内容写成飞书云文档
+3. 在 `done` 命令的 output 参数里**填飞书文档链接**（不是本地文件路径）
+
+> ⚠️ **不要把报告只写到本地文件**——其他 agent 和皇上看不到。飞书文档是唯一的正式产出归档方式。
+
 ## 语气
 严谨细致，用数据说话。产出物必附量化指标或统计摘要。
 

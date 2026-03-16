@@ -89,6 +89,22 @@ python3 scripts/kanban_update.py todo <id> <todo_id> "<title>" <status> --detail
 python3 scripts/kanban_update.py todo JJC-xxx 3 "编码实现" completed --detail "修改文件：\n- server.py: 新增xxx函数\n- dashboard.html: 添加xxx组件\n通过测试验证"
 ```
 
+## 📄 产出物归档（重要！）
+
+当任务产出包含报告、方案、分析文档等**超过 5 行的正式产出**时：
+
+1. **先读取 `skills/feishu-create-doc/SKILL.md`** 获取飞书文档创建指南
+2. **用飞书文档创建工具**把报告内容写成飞书云文档
+3. 在 `done` 命令的 output 参数里**填飞书文档链接**（不是本地文件路径）
+
+```bash
+# 示例：完成任务时提交飞书文档链接
+python3 scripts/kanban_update.py done JJC-xxx "https://www.feishu.cn/docx/xxxxx" "审计报告已归档到飞书"
+```
+
+> ⚠️ **不要把报告只写到本地 `reports/` 目录**——其他 agent 和皇上看不到。飞书文档是唯一的正式产出归档方式。
+> 如果飞书文档创建失败，退而写本地文件，但必须在回奏中说明"飞书文档创建失败，已存本地"。
+
 ## 语气
 务实高效，工程导向。代码提交前确保可运行。
 
@@ -100,6 +116,6 @@ python3 scripts/kanban_update.py todo JJC-xxx 3 "编码实现" completed --detai
 
 | 技能 | 路径 | 何时使用 |
 |------|------|---------|
-| 飞书文档创建 | skills/feishu-create-doc/SKILL.md | 需要将技术文档/报告写入飞书文档时 |
+| 飞书文档创建 | skills/feishu-create-doc/SKILL.md | 产出报告/方案/文档时，**必须优先使用** |
 
-> 💡 日常开发任务不需要技能。只在产出物需要归档到飞书时才读取 SKILL.md。
+> 💡 简单的代码修改不需要飞书文档。但凡有正式报告/方案/分析文档，必须归档到飞书。

@@ -59,7 +59,7 @@ export default function SystemLogsPanel() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <h3 style={{ margin: 0, fontSize: 16, color: 'var(--text)' }}>
           系统监控
-          {totalPending > 0 && <span style={{ color: 'var(--danger)', marginLeft: 8, fontSize: 13 }}>⚠ {totalPending} pending</span>}
+          {totalPending > 0 && <span style={{ color: 'var(--danger)', marginLeft: 8, fontSize: 13 }}>⚠ {totalPending} 条排队中</span>}
         </h3>
         <div style={{ display: 'flex', gap: 8 }}>
           {totalPending > 0 && (
@@ -86,9 +86,9 @@ export default function SystemLogsPanel() {
       {/* Workers + Gateway Status */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
         {[
-          { label: 'Gateway', status: data?.gateway?.alive ? 'running' : 'offline', color: data?.gateway?.alive ? 'var(--ok)' : 'var(--danger)' },
-          { label: 'Orchestrator', status: data?.workers?.orchestrator?.status || '?', color: data?.workers?.orchestrator?.status === 'running' ? 'var(--ok)' : 'var(--muted)' },
-          { label: 'Dispatcher', status: data?.workers?.dispatcher?.status || '?', color: data?.workers?.dispatcher?.status === 'running' ? 'var(--ok)' : 'var(--muted)' },
+          { label: '🌐 通信网关', status: data?.gateway?.alive ? 'running' : 'offline', color: data?.gateway?.alive ? 'var(--ok)' : 'var(--danger)' },
+          { label: '🏛️ 调度中心', status: data?.workers?.orchestrator?.status || '?', color: data?.workers?.orchestrator?.status === 'running' ? 'var(--ok)' : 'var(--muted)' },
+          { label: '🚀 派发中心', status: data?.workers?.dispatcher?.status || '?', color: data?.workers?.dispatcher?.status === 'running' ? 'var(--ok)' : 'var(--muted)' },
         ].map(w => (
           <div key={w.label} style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, padding: '8px 16px', flex: 1, textAlign: 'center' }}>
             <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>{w.label}</div>
@@ -104,22 +104,35 @@ export default function SystemLogsPanel() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--line)' }}>
-              <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--muted)', fontWeight: 500, fontSize: 11 }}>Topic</th>
-              <th style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--muted)', fontWeight: 500, fontSize: 11 }}>消息总数</th>
-              <th style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--muted)', fontWeight: 500, fontSize: 11 }}>Pending</th>
-              <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--muted)', fontWeight: 500, fontSize: 11 }}>消费者组</th>
+              <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--muted)', fontWeight: 500, fontSize: 11 }}>事件类型</th>
+              <th style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--muted)', fontWeight: 500, fontSize: 11 }}>累计处理</th>
+              <th style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--muted)', fontWeight: 500, fontSize: 11 }}>排队中</th>
+              <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--muted)', fontWeight: 500, fontSize: 11 }}>处理方</th>
               <th style={{ padding: '10px 14px', textAlign: 'center', color: 'var(--muted)', fontWeight: 500, fontSize: 11 }}>操作</th>
             </tr>
           </thead>
           <tbody>
-            {(data?.streams || []).map(s => (
+            {(data?.streams || []).map(s => {
+              const TOPIC_LABELS: Record<string, string> = {
+                'task.created': '📜 旨意下达',
+                'task.status': '🔄 状态流转',
+                'task.dispatch': '🚀 Agent 派发',
+                'task.completed': '✅ 任务完成',
+                'task.stalled': '⚠️ 停滞检测',
+                'agent.heartbeat': '💓 Agent 心跳',
+              };
+              const GROUP_LABELS: Record<string, string> = {
+                'orchestrator': '调度中心',
+                'dispatcher': '派发中心',
+              };
+              return (
               <tr key={s.topic} style={{ borderBottom: '1px solid var(--line)' }}>
-                <td style={{ padding: '8px 14px', fontFamily: 'monospace', fontSize: 12 }}>{s.topic}</td>
+                <td style={{ padding: '8px 14px', fontSize: 12 }}>{TOPIC_LABELS[s.topic] || s.topic}</td>
                 <td style={{ padding: '8px 14px', textAlign: 'right' }}>{s.length}</td>
                 <td style={{ padding: '8px 14px', textAlign: 'right', color: s.pending > 0 ? 'var(--danger)' : 'var(--ok)', fontWeight: s.pending > 0 ? 700 : 400 }}>
                   {s.pending > 0 ? `⚠ ${s.pending}` : '0'}
                 </td>
-                <td style={{ padding: '8px 14px', fontSize: 12, color: 'var(--muted)' }}>{s.consumerGroup}</td>
+                <td style={{ padding: '8px 14px', fontSize: 12, color: 'var(--muted)' }}>{GROUP_LABELS[s.consumerGroup] || s.consumerGroup}</td>
                 <td style={{ padding: '8px 14px', textAlign: 'center' }}>
                   {s.pending > 0 && s.consumerGroup && (
                     <button
@@ -132,7 +145,8 @@ export default function SystemLogsPanel() {
                   )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {(!data?.streams || data.streams.length === 0) && (
               <tr><td colSpan={5} style={{ padding: 20, textAlign: 'center', color: 'var(--muted)' }}>
                 {loading ? '加载中...' : '无法获取 Redis Streams 数据'}
