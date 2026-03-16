@@ -25,18 +25,65 @@ const AGENT_LABELS: Record<string, string> = {
 };
 
 function simpleMarkdown(text: string): string {
-  return text
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/^### (.+)$/gm, '<h4 style="margin:8px 0 4px;color:var(--text)">$1</h4>')
-    .replace(/^## (.+)$/gm, '<h3 style="margin:10px 0 4px;color:var(--text)">$1</h3>')
-    .replace(/^# (.+)$/gm, '<h2 style="margin:12px 0 6px;color:var(--acc)">$1</h2>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/`(.+?)`/g, '<code style="background:var(--panel);padding:1px 4px;border-radius:3px;font-size:11px">$1</code>')
-    .replace(/^[-*] (.+)$/gm, '<li style="margin-left:16px">$1</li>')
-    .replace(/^(\d+)\. (.+)$/gm, '<li style="margin-left:16px">$2</li>')
-    .replace(/\n{2,}/g, '<br/><br/>')
-    .replace(/\n/g, '<br/>');
+  // 先提取代码块，替换为占位符避免被其他规则干扰
+  const codeBlocks: string[] = [];
+  let s = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+    const idx = codeBlocks.length;
+    const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    codeBlocks.push(
+      `<pre style="background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px;overflow-x:auto;font-size:11px;line-height:1.6;margin:8px 0"><code>${escaped}</code></pre>`
+    );
+    return `__CODE_BLOCK_${idx}__`;
+  });
+
+  // 转义 HTML（代码块已提取）
+  s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // 表格
+  s = s.replace(/^(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)*)/gm, (_m, header, _sep, body) => {
+    const ths = header.split('|').filter(Boolean).map((c: string) =>
+      `<th style="padding:4px 8px;border-bottom:2px solid var(--line);text-align:left;font-size:11px;color:var(--muted)">${c.trim()}</th>`
+    ).join('');
+    const rows = body.trim().split('\n').map((row: string) => {
+      const tds = row.split('|').filter(Boolean).map((c: string) =>
+        `<td style="padding:4px 8px;border-bottom:1px solid var(--line);font-size:11px">${c.trim()}</td>`
+      ).join('');
+      return `<tr>${tds}</tr>`;
+    }).join('');
+    return `<table style="width:100%;border-collapse:collapse;margin:8px 0"><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>`;
+  });
+
+  // 标题
+  s = s.replace(/^#### (.+)$/gm, '<h5 style="margin:6px 0 2px;font-size:12px;color:var(--text)">$1</h5>');
+  s = s.replace(/^### (.+)$/gm, '<h4 style="margin:8px 0 4px;font-size:13px;color:var(--text)">$1</h4>');
+  s = s.replace(/^## (.+)$/gm, '<h3 style="margin:12px 0 4px;font-size:14px;color:var(--text);border-bottom:1px solid var(--line);padding-bottom:4px">$1</h3>');
+  s = s.replace(/^# (.+)$/gm, '<h2 style="margin:14px 0 6px;font-size:16px;color:var(--acc)">$1</h2>');
+
+  // 分割线
+  s = s.replace(/^---+$/gm, '<hr style="border:none;border-top:1px solid var(--line);margin:12px 0"/>');
+
+  // 粗体、斜体、行内代码
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  s = s.replace(/`(.+?)`/g, '<code style="background:var(--panel);padding:1px 4px;border-radius:3px;font-size:11px">$1</code>');
+
+  // 列表
+  s = s.replace(/^[-*] (.+)$/gm, '<li style="margin-left:16px;margin-bottom:2px">$1</li>');
+  s = s.replace(/^(\d+)\. (.+)$/gm, '<li style="margin-left:16px;margin-bottom:2px">$2</li>');
+
+  // 引用
+  s = s.replace(/^&gt; (.+)$/gm, '<blockquote style="border-left:3px solid var(--acc);padding-left:10px;margin:6px 0;color:var(--muted);font-size:11px">$1</blockquote>');
+
+  // 换行
+  s = s.replace(/\n{2,}/g, '<br/><br/>');
+  s = s.replace(/\n/g, '<br/>');
+
+  // 还原代码块
+  codeBlocks.forEach((block, i) => {
+    s = s.replace(`__CODE_BLOCK_${i}__`, block);
+  });
+
+  return s;
 }
 
 const NEXT_LABELS: Record<string, string> = {
