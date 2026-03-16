@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import { api } from '../api';
+import type { StreamInfo, SystemLogsData } from '../api';
 
 export default function ModelConfig() {
   const agentConfig = useStore((s) => s.agentConfig);
@@ -10,9 +11,12 @@ export default function ModelConfig() {
 
   const [selMap, setSelMap] = useState<Record<string, string>>({});
   const [statusMap, setStatusMap] = useState<Record<string, { cls: string; text: string }>>({});
+  const [sysLogs, setSysLogs] = useState<SystemLogsData | null>(null);
+  const [sysOpen, setSysOpen] = useState(false);
 
   useEffect(() => {
     loadAgentConfig();
+    api.systemLogs().then(setSysLogs).catch(() => {});
   }, [loadAgentConfig]);
 
   useEffect(() => {
@@ -139,6 +143,75 @@ export default function ModelConfig() {
               ))
           )}
         </div>
+      </div>
+
+      {/* ── 系统状态 ── */}
+      <div style={{ marginTop: 24, borderTop: '1px solid var(--line)', paddingTop: 16 }}>
+        <div
+          style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}
+          onClick={() => { setSysOpen(!sysOpen); if (!sysOpen) api.systemLogs().then(setSysLogs).catch(() => {}); }}
+        >
+          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--acc)' }}>⚙ 系统状态</span>
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>{sysOpen ? '▼' : '▶'}</span>
+          {sysLogs && (sysLogs.streams || []).some(s => s.pending > 0) && (
+            <span style={{ fontSize: 10, background: 'var(--danger)', color: '#fff', padding: '1px 6px', borderRadius: 8 }}>
+              积压
+            </span>
+          )}
+        </div>
+        {sysOpen && sysLogs && (
+          <div style={{ marginTop: 12, fontSize: 12 }}>
+            <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+              <span style={{ padding: '4px 10px', borderRadius: 6, background: sysLogs.gateway?.alive ? 'rgba(76,175,80,.15)' : 'rgba(244,67,54,.15)', color: sysLogs.gateway?.alive ? 'var(--ok)' : 'var(--danger)' }}>
+                Gateway: {sysLogs.gateway?.alive ? '在线' : '离线'}
+              </span>
+              <span style={{ padding: '4px 10px', borderRadius: 6, background: 'rgba(106,158,255,.1)', color: 'var(--acc)' }}>
+                Orchestrator: {sysLogs.workers?.orchestrator?.status || '?'}
+              </span>
+              <span style={{ padding: '4px 10px', borderRadius: 6, background: 'rgba(106,158,255,.1)', color: 'var(--acc)' }}>
+                Dispatcher: {sysLogs.workers?.dispatcher?.status || '?'}
+              </span>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--line)', color: 'var(--muted)' }}>
+                  <th style={{ textAlign: 'left', padding: '4px 8px' }}>Topic</th>
+                  <th style={{ textAlign: 'right', padding: '4px 8px' }}>消息数</th>
+                  <th style={{ textAlign: 'right', padding: '4px 8px' }}>积压</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px' }}>消费者</th>
+                  <th style={{ textAlign: 'center', padding: '4px 8px' }}>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(sysLogs.streams || []).map((s: StreamInfo) => (
+                  <tr key={s.topic} style={{ borderBottom: '1px solid var(--line)' }}>
+                    <td style={{ padding: '4px 8px', fontFamily: 'monospace' }}>{s.topic}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right' }}>{s.length}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', color: s.pending > 0 ? 'var(--danger)' : 'var(--ok)', fontWeight: s.pending > 0 ? 700 : 400 }}>
+                      {s.pending}
+                    </td>
+                    <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontSize: 10 }}>{s.consumerGroup}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'center' }}>
+                      {s.pending > 0 && (
+                        <button
+                          style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--danger)', background: 'transparent', color: 'var(--danger)', cursor: 'pointer' }}
+                          onClick={async () => {
+                            if (!confirm(`确认清除 ${s.topic} 的 ${s.pending} 条积压？`)) return;
+                            try {
+                              await api.flushPending(s.topic, s.consumerGroup);
+                              toast('已清除积压', 'ok');
+                              api.systemLogs().then(setSysLogs).catch(() => {});
+                            } catch { toast('清除失败', 'err'); }
+                          }}
+                        >清除</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
