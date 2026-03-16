@@ -47,7 +47,83 @@ check_deps() {
   log "openclaw.json: $OC_CFG"
 }
 
-# ── Step 0.5: 备份已有 Agent 数据 ──────────────────────────────
+# ── Step 0.5: EDICT 后端基础设施（PostgreSQL + Redis）──────────
+setup_edict_infra() {
+  info "检查 EDICT 后端基础设施..."
+
+  if ! command -v docker &>/dev/null; then
+    warn "未找到 docker，跳过 PostgreSQL/Redis 自动安装"
+    warn "EDICT 后端需要 PostgreSQL 和 Redis，请手动安装后再启动"
+    return
+  fi
+  log "Docker: $(docker --version 2>/dev/null | head -1)"
+
+  # PostgreSQL
+  if docker ps --format '{{.Names}}' | grep -q '^edict-pg$'; then
+    log "PostgreSQL 容器已运行: edict-pg"
+  elif docker ps -a --format '{{.Names}}' | grep -q '^edict-pg$'; then
+    info "启动已有的 PostgreSQL 容器..."
+    docker start edict-pg
+    log "PostgreSQL 容器已启动: edict-pg"
+  else
+    info "创建 PostgreSQL 容器..."
+    docker run -d --name edict-pg \
+      -e POSTGRES_USER=edict \
+      -e POSTGRES_PASSWORD=edict \
+      -e POSTGRES_DB=edict \
+      -p 5432:5432 \
+      --restart=always \
+      postgres:16-alpine
+    log "PostgreSQL 容器已创建: edict-pg (端口 5432)"
+  fi
+
+  # Redis
+  if docker ps --format '{{.Names}}' | grep -q '^edict-redis$'; then
+    log "Redis 容器已运行: edict-redis"
+  elif docker ps -a --format '{{.Names}}' | grep -q '^edict-redis$'; then
+    info "启动已有的 Redis 容器..."
+    docker start edict-redis
+    log "Redis 容器已启动: edict-redis"
+  else
+    info "创建 Redis 容器..."
+    docker run -d --name edict-redis \
+      -p 6379:6379 \
+      --restart=always \
+      redis:7-alpine
+    log "Redis 容器已创建: edict-redis (端口 6379)"
+  fi
+
+  # 等待服务就绪
+  sleep 3
+  if docker exec edict-pg pg_isready -q 2>/dev/null; then
+    log "PostgreSQL 连接正常"
+  else
+    warn "PostgreSQL 启动中，可能需要几秒..."
+  fi
+  if docker exec edict-redis redis-cli ping 2>/dev/null | grep -q PONG; then
+    log "Redis 连接正常"
+  else
+    warn "Redis 启动中，可能需要几秒..."
+  fi
+
+  # 设置容器自动重启
+  docker update --restart=always edict-pg edict-redis &>/dev/null || true
+
+  # 安装 Python 依赖
+  if [ -f "$REPO_DIR/edict/backend/requirements.txt" ]; then
+    info "安装 EDICT 后端 Python 依赖..."
+    if [ -d "$REPO_DIR/.venv-edict" ]; then
+      "$REPO_DIR/.venv-edict/bin/pip" install -q -r "$REPO_DIR/edict/backend/requirements.txt" 2>/dev/null && log "依赖已安装（已有虚拟环境）" || warn "依赖安装失败，请手动 pip install"
+    else
+      python3 -m venv "$REPO_DIR/.venv-edict" 2>/dev/null && \
+        "$REPO_DIR/.venv-edict/bin/pip" install -q -r "$REPO_DIR/edict/backend/requirements.txt" 2>/dev/null && \
+        log "虚拟环境已创建: .venv-edict" || \
+        warn "虚拟环境创建失败，请手动: python3 -m venv .venv-edict && pip install -r edict/backend/requirements.txt"
+    fi
+  fi
+}
+
+# ── Step 0.6: 备份已有 Agent 数据 ──────────────────────────────
 backup_existing() {
   AGENTS_DIR="$OC_HOME"
   BACKUP_DIR="$OC_HOME/backups/pre-install-$(date +%Y%m%d-%H%M%S)"
@@ -347,6 +423,7 @@ restart_gateway() {
 # ── Main ────────────────────────────────────────────────────
 banner
 check_deps
+setup_edict_infra
 backup_existing
 create_workspaces
 register_agents

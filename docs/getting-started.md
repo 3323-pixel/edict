@@ -31,14 +31,19 @@ chmod +x install.sh && ./install.sh
 ```
 
 安装脚本会自动完成：
+- ✅ 检测并启动 PostgreSQL + Redis（需要 Docker）
+- ✅ 安装 EDICT 后端 Python 依赖（自动创建虚拟环境）
 - ✅ 创建 12 个 Agent Workspace（`~/.openclaw/workspace-*`）
 - ✅ 写入各省部 SOUL.md 人格文件
 - ✅ 注册 Agent 及权限矩阵到 `openclaw.json`
-- ✅ 配置旨意数据清洗规则
+- ✅ 链接飞书 Skills 到各 Agent（检测到飞书配置时）
+- ✅ 创建共享 outputs 目录
 - ✅ 构建 React 前端到 `dashboard/dist/`（需 Node.js 18+）
 - ✅ 初始化数据目录
 - ✅ 执行首次数据同步
 - ✅ 重启 Gateway 使配置生效
+
+> ⚠️ **前置要求**：Docker（用于运行 PostgreSQL 和 Redis）。如果没有 Docker，install.sh 会跳过数据库安装，你需要手动安装。
 
 ## 第三步：配置消息渠道
 
@@ -56,20 +61,38 @@ openclaw channels add --type feishu --agent taizi
 
 ## 第四步：启动服务
 
-```bash
-# 终端 1：数据刷新循环（每 15 秒同步）
-bash scripts/run_loop.sh
+需要启动 3 个服务：
 
-# 终端 2：看板服务器
-python3 dashboard/server.py
+```bash
+# 1. EDICT 后端（事件驱动派发 + 数据库）
+cd edict/backend
+.venv-edict/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+cd ../..
+
+# 2. 看板服务器
+python3 dashboard/server.py &
+
+# 3. 数据刷新循环（每 15 秒同步 + 每小时清理 session）
+bash scripts/run_loop.sh &
 
 # 打开浏览器
 open http://127.0.0.1:7891
 ```
 
-> 💡 **提示**：`run_loop.sh` 每 15 秒自动同步数据。可用 `&` 后台运行。
+> ⚠️ **EDICT 后端必须启动**：它包含 Orchestrator（自动派发 Agent）和 Dispatcher（执行 Agent 调用）。不启动的话任务状态变更后 Agent 不会自动接力。
 
-> 💡 **看板即开即用**：`server.py` 内嵌 `dashboard/dashboard.html`，无需额外构建。Docker 镜像包含预构建的 React 前端。
+> 💡 **看板即开即用**：`server.py` 内嵌 React 前端，无需额外构建。
+
+### 验证服务是否正常
+
+```bash
+# 看板
+curl http://localhost:7891/healthz
+# EDICT 后端
+curl http://localhost:8000/health
+# Gateway
+openclaw daemon status
+```
 
 ## 第五步：发送第一道旨意
 
