@@ -40,6 +40,11 @@ def _cleanup(task_id):
                {"output": "", "summary": "test cleanup", "agent": "test"})
     except Exception:
         pass
+    # 清掉测试产生的 dispatch 事件，防止浪费 API 配额
+    try:
+        _edict("POST", "/api/admin/system/flush-pending?topic=task.dispatch&group=dispatcher", {})
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True, scope="module")

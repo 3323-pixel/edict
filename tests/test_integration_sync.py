@@ -69,7 +69,7 @@ def _json_task(task_id):
 
 
 def _cleanup_task(task_id):
-    """Best-effort cleanup: mark task Done in both systems."""
+    """Best-effort cleanup: mark task Done + flush dispatch events to avoid wasting API quota."""
     try:
         _edict_post(f"/api/tasks/by-legacy/{task_id}/done", {
             "output": "", "summary": "test cleanup", "agent": "test"
@@ -80,6 +80,11 @@ def _cleanup_task(task_id):
         _dashboard_post("/api/task-action", {
             "taskId": task_id, "action": "cancel", "reason": "test cleanup"
         })
+    except Exception:
+        pass
+    # 清掉测试产生的 dispatch 事件，防止 dispatcher 对测试任务调用真实 agent
+    try:
+        _edict_post("/api/admin/system/flush-pending?topic=task.dispatch&group=dispatcher", {})
     except Exception:
         pass
 
