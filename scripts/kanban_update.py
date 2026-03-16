@@ -36,7 +36,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 def _notify_dashboard_sync(task_id=None):
-    """通知 dashboard server 同步状态，并立即触发 agent 派发。"""
+    """通知 dashboard 刷新数据。Agent 派发由 EDICT event bus 自动处理。"""
     import urllib.request
     try:
         urllib.request.urlopen(
@@ -44,17 +44,6 @@ def _notify_dashboard_sync(task_id=None):
             timeout=3)
     except Exception:
         pass
-    # 立即触发该任务的 agent 派发（不等 120 秒 scheduler 轮询）
-    if task_id:
-        try:
-            body = json.dumps({"taskId": task_id}).encode()
-            urllib.request.urlopen(
-                urllib.request.Request('http://localhost:7891/api/dispatch-task',
-                                      data=body, headers={'Content-Type': 'application/json'},
-                                      method='POST'),
-                timeout=5)
-        except Exception:
-            pass
 
 try:
     from edict_client import EdictClient

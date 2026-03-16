@@ -12,6 +12,7 @@ Lifespan 管理：
 - /ws — WebSocket 实时推送
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -22,6 +23,8 @@ from .config import get_settings
 from .services.event_bus import get_event_bus
 from .api import tasks, agents, events, admin, websocket
 from .api import legacy
+from .workers.orchestrator_worker import OrchestratorWorker
+from .workers.dispatch_worker import DispatchWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,9 +43,20 @@ async def lifespan(app: FastAPI):
     bus = await get_event_bus()
     log.info("✅ Event Bus connected")
 
+    # 启动事件驱动 Workers
+    orch = OrchestratorWorker()
+    disp = DispatchWorker()
+    orch_task = asyncio.create_task(orch.start())
+    disp_task = asyncio.create_task(disp.start())
+    log.info("✅ Orchestrator + Dispatch workers started")
+
     yield
 
-    # 清理
+    # 停止 workers
+    await orch.stop()
+    await disp.stop()
+    orch_task.cancel()
+    disp_task.cancel()
     await bus.close()
     log.info("Edict Backend shutdown complete")
 
