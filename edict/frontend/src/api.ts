@@ -98,6 +98,24 @@ export const api = {
     fetchJ<SystemLogsData>(`${API_BASE}/api/system-logs`),
   flushPending: (topic: string, group: string) =>
     postJ<ActionResult & { flushed?: number }>(`${API_BASE}/api/system-logs/flush`, { topic, group }),
+
+  // 朝堂议政
+  courtDiscussStart: (topic: string, officials: string[], taskId?: string) =>
+    postJ<any>(`${API_BASE}/api/court-discuss/start`, { topic, officials, taskId }),
+  courtDiscussAdvance: (sessionId: string, message?: string, decree?: string) =>
+    postJ<any>(`${API_BASE}/api/court-discuss/advance`, { sessionId, message, decree }),
+  courtDiscussConclude: (sessionId: string) =>
+    postJ<any>(`${API_BASE}/api/court-discuss/conclude`, { sessionId }),
+  courtDiscussDestroy: (sessionId: string) =>
+    postJ<any>(`${API_BASE}/api/court-discuss/destroy`, { sessionId }),
+  courtDiscussFate: () =>
+    fetchJ<any>(`${API_BASE}/api/court-discuss/fate`),
+  courtDiscussList: () =>
+    fetchJ<any>(`${API_BASE}/api/court-discuss/list`),
+  courtDiscussOfficials: () =>
+    fetchJ<any>(`${API_BASE}/api/court-discuss/officials`),
+  courtDiscussSession: (sessionId: string) =>
+    fetchJ<any>(`${API_BASE}/api/court-discuss/session/${sessionId}`),
 };
 
 // ── Types ──

@@ -9,6 +9,7 @@ import SessionsPanel from './components/SessionsPanel';
 import MemorialPanel from './components/MemorialPanel';
 import TemplatePanel from './components/TemplatePanel';
 import MorningPanel from './components/MorningPanel';
+import CourtDiscussion from './components/CourtDiscussion';
 import SystemLogsPanel from './components/SystemLogsPanel';
 import TaskModal from './components/TaskModal';
 // ConfirmDialog is used inside TaskModal as needed
@@ -90,6 +91,7 @@ export default function App() {
       {activeTab === 'memorials' && <MemorialPanel />}
       {activeTab === 'templates' && <TemplatePanel />}
       {activeTab === 'morning' && <MorningPanel />}
+      {activeTab === 'court' && <CourtDiscussion />}
       {activeTab === 'systemlogs' && <SystemLogsPanel />}
 
       {/* ── Overlays ── */}

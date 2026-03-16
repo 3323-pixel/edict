@@ -24,6 +24,12 @@ if dashboard_dir not in sys.path:
     sys.path.insert(0, dashboard_dir)
 from file_lock import atomic_json_read, atomic_json_write, atomic_json_update
 from utils import validate_url
+from court_discuss import (
+    create_session as cd_create, advance_discussion as cd_advance,
+    get_session as cd_get, conclude_session as cd_conclude,
+    list_sessions as cd_list, destroy_session as cd_destroy,
+    get_fate_event as cd_fate, OFFICIAL_PROFILES as CD_PROFILES,
+)
 
 log = logging.getLogger('server')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
@@ -1068,6 +1074,20 @@ class Handler(BaseHTTPRequestHandler):
                     'dispatcher': {'status': 'running' if edict_streams.get('streams') else 'unknown'},
                 },
             })
+        # ── 朝堂议政 GET ──
+        elif p == '/api/court-discuss/list':
+            self.send_json({'ok': True, 'sessions': cd_list()})
+        elif p == '/api/court-discuss/officials':
+            self.send_json({'ok': True, 'officials': CD_PROFILES})
+        elif p.startswith('/api/court-discuss/session/'):
+            sid = p.replace('/api/court-discuss/session/', '')
+            data = cd_get(sid)
+            if data:
+                self.send_json({'ok': True, 'session': data})
+            else:
+                self.send_json({'ok': False, 'error': '会话不存在'}, 404)
+        elif p == '/api/court-discuss/fate':
+            self.send_json({'ok': True, 'event': cd_fate()})
         elif p.startswith('/api/agent-activity/'):
             agent_id = p.replace('/api/agent-activity/', '')
             if not agent_id or not _SAFE_NAME_RE.match(agent_id):
@@ -1142,6 +1162,44 @@ class Handler(BaseHTTPRequestHandler):
                 return
             result = _edict_request('POST', f'/api/admin/system/flush-pending?topic={topic}&group={group}')
             self.send_json(result or {'ok': False, 'error': 'EDICT unavailable'})
+            return
+
+        # ── 朝堂议政 POST ──
+        if p == '/api/court-discuss/start':
+            topic = body.get('topic', '').strip()
+            officials = body.get('officials', [])
+            task_id = body.get('taskId', '')
+            if not topic:
+                self.send_json({'ok': False, 'error': '议题不能为空'}, 400)
+                return
+            self.send_json(cd_create(topic, officials, task_id))
+            return
+
+        if p == '/api/court-discuss/advance':
+            sid = body.get('sessionId', '').strip()
+            user_msg = body.get('message', '')
+            decree = body.get('decree', '')
+            if not sid:
+                self.send_json({'ok': False, 'error': 'sessionId required'}, 400)
+                return
+            self.send_json(cd_advance(sid, user_msg, decree))
+            return
+
+        if p == '/api/court-discuss/conclude':
+            sid = body.get('sessionId', '').strip()
+            if not sid:
+                self.send_json({'ok': False, 'error': 'sessionId required'}, 400)
+                return
+            self.send_json(cd_conclude(sid))
+            return
+
+        if p == '/api/court-discuss/destroy':
+            sid = body.get('sessionId', '').strip()
+            if sid:
+                cd_destroy(sid)
+                self.send_json({'ok': True})
+            else:
+                self.send_json({'ok': False, 'error': 'sessionId required'}, 400)
             return
 
         if p == '/api/scheduler-scan':
